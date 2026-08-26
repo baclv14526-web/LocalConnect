@@ -1,7 +1,6 @@
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
-    id("org.jetbrains.kotlin.plugin.compose")
     id("com.google.devtools.ksp")
 }
 
@@ -56,6 +55,13 @@ android {
     buildFeatures {
         compose = true
         viewBinding = true
+    }
+
+    // Kotlin 1.9.x dùng cấu hình Compose Compiler kiểu cũ (không phải plugin
+    // org.jetbrains.kotlin.plugin.compose - plugin đó chỉ có từ Kotlin 2.0 trở lên).
+    // 1.5.14 là bản Compose Compiler tương thích với Kotlin 1.9.24.
+    composeOptions {
+        kotlinCompilerExtensionVersion = "1.5.14"
     }
 
     packaging {
