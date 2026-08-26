@@ -8,13 +8,16 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.dp
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import androidx.core.content.ContextCompat.startForegroundService
@@ -76,6 +79,48 @@ class MainActivity : ComponentActivity() {
         var screen by remember { mutableStateOf<Screen>(Screen.PeerList) }
         val peers by vm.peers.collectAsStateWithLifecycle()
         val incomingCall by vm.incomingCall.collectAsStateWithLifecycle()
+        val connectStatus by vm.connectStatus.collectAsStateWithLifecycle()
+        var showManualConnectDialog by remember { mutableStateOf(false) }
+        var manualIp by remember { mutableStateOf("") }
+
+        if (showManualConnectDialog) {
+            AlertDialog(
+                onDismissRequest = { showManualConnectDialog = false },
+                title = { Text("Kết nối bằng IP") },
+                text = {
+                    Column {
+                        Text("Nhập địa chỉ IP của máy kia (xem trong Cài đặt Wi-Fi trên máy đó), ví dụ 192.168.43.5")
+                        androidx.compose.foundation.layout.Spacer(Modifier.height(8.dp))
+                        OutlinedTextField(
+                            value = manualIp,
+                            onValueChange = { manualIp = it },
+                            placeholder = { Text("192.168.43.5") },
+                            singleLine = true
+                        )
+                    }
+                },
+                confirmButton = {
+                    TextButton(onClick = {
+                        vm.connectManually(manualIp)
+                        showManualConnectDialog = false
+                    }) { Text("Kết nối") }
+                },
+                dismissButton = {
+                    TextButton(onClick = { showManualConnectDialog = false }) { Text("Huỷ") }
+                }
+            )
+        }
+
+        connectStatus?.let { status ->
+            AlertDialog(
+                onDismissRequest = { vm.clearConnectStatus() },
+                title = { Text("Kết nối thủ công") },
+                text = { Text(status) },
+                confirmButton = {
+                    TextButton(onClick = { vm.clearConnectStatus() }) { Text("Đóng") }
+                }
+            )
+        }
 
         incomingCall?.let { call ->
             AlertDialog(
@@ -99,7 +144,8 @@ class MainActivity : ComponentActivity() {
                 peers = peers,
                 onOpenChat = { peer -> screen = Screen.DirectChat(peer) },
                 onCall = { peer, isVideo -> launchCall(peer.id, peer.name, isVideo, incoming = false, remoteSdp = null) },
-                onOpenGroupChat = { screen = Screen.GroupChat }
+                onOpenGroupChat = { screen = Screen.GroupChat },
+                onManualConnect = { manualIp = ""; showManualConnectDialog = true }
             )
             Screen.GroupChat -> {
                 val messages by vm.conversation(GROUP_CONVERSATION_ID).collectAsStateWithLifecycle(initialValue = emptyList())

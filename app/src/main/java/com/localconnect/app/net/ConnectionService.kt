@@ -4,6 +4,7 @@ import android.app.Notification
 import android.app.PendingIntent
 import android.app.Service
 import android.content.Intent
+import android.net.wifi.WifiManager
 import android.os.Build
 import android.os.IBinder
 import androidx.core.app.NotificationCompat
@@ -23,10 +24,13 @@ class ConnectionService : Service() {
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private lateinit var nsd: NsdDiscoveryManager
+    private var multicastLock: WifiManager.MulticastLock? = null
 
     override fun onCreate() {
         super.onCreate()
         startForeground(NOTIF_ID, buildNotification())
+
+        acquireMulticastLock()
 
         val myId = DeviceIdentity.myId
         val myName = DeviceIdentity.myName
@@ -49,6 +53,24 @@ class ConnectionService : Service() {
         }
     }
 
+    /**
+     * Trên nhiều thiết bị, khi Wi-Fi đang ở chế độ hotspot/AP, hệ thống mặc định lọc bỏ gói
+     * multicast (mDNS dùng multicast 224.0.0.251:5353 để "hô" tìm nhau) trừ khi có app đang
+     * giữ MulticastLock. Thiếu bước này là nguyên nhân phổ biến khiến NSD không tìm thấy
+     * thiết bị khác dù cùng một mạng.
+     */
+    private fun acquireMulticastLock() {
+        try {
+            val wifiManager = applicationContext.getSystemService(WIFI_SERVICE) as WifiManager
+            val lock = wifiManager.createMulticastLock("localconnect_mdns_lock")
+            lock.setReferenceCounted(true)
+            lock.acquire()
+            multicastLock = lock
+        } catch (e: Exception) {
+            // Không chặn service nếu thiết bị không hỗ trợ - vẫn còn đường kết nối thủ công bằng IP
+        }
+    }
+
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int = START_STICKY
 
     override fun onBind(intent: Intent?): IBinder? = null
@@ -57,6 +79,7 @@ class ConnectionService : Service() {
         super.onDestroy()
         nsd.stop()
         ConnectionManager.stopAll()
+        try { multicastLock?.release() } catch (_: Exception) {}
     }
 
     private fun buildNotification(): Notification {

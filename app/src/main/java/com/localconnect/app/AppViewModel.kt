@@ -18,8 +18,10 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 
 data class IncomingCall(val peerId: String, val peerName: String, val isVideo: Boolean, val sdp: String)
 
@@ -69,6 +71,38 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun clearIncomingCall() { _incomingCall.value = null }
+
+    private val _connectStatus = MutableStateFlow<String?>(null)
+    val connectStatus: StateFlow<String?> = _connectStatus
+
+    /**
+     * Kết nối thủ công bằng địa chỉ IP, dùng khi mDNS (tự tìm nhau) không hoạt động.
+     * Cũng là cách để CHẨN ĐOÁN: nếu kết nối thủ công cũng thất bại/timeout thì rất có thể
+     * mạng hotspot đang bật "cô lập client" (AP isolation) chứ không phải lỗi tìm kiếm.
+     */
+    fun connectManually(ip: String) {
+        val host = ip.trim()
+        if (host.isEmpty()) return
+        _connectStatus.value = "Đang thử kết nối tới $host..."
+        val peer = Peer(id = "manual-$host", name = host, host = host, port = com.localconnect.app.net.CONTROL_PORT)
+        ConnectionManager.connectToPeer(peer, myId, myName)
+        viewModelScope.launch {
+            val before = ConnectionManager.connectedPeerIds.value
+            val result = withTimeoutOrNull(6000) {
+                ConnectionManager.connectedPeerIds.first { it.size > before.size }
+            }
+            _connectStatus.value = if (result != null) {
+                "Đã kết nối thành công tới $host ✅"
+            } else {
+                "Không kết nối được tới $host sau 6 giây.\n" +
+                    "Rất có thể mạng hotspot đang bật \"cô lập client\" (AP isolation) — kiểm tra " +
+                    "Cài đặt > Điểm phát Wi-Fi > Nâng cao trên máy đang phát hotspot, hoặc thử dùng " +
+                    "một bộ phát Wi-Fi (router) khác không cô lập thiết bị."
+            }
+        }
+    }
+
+    fun clearConnectStatus() { _connectStatus.value = null }
 
     fun sendGroupText(text: String) = viewModelScope.launch {
         val wire = repo.saveOutgoingText(GROUP_CONVERSATION_ID, myId, myName, text)
