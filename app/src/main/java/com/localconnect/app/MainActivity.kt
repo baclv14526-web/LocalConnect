@@ -9,7 +9,9 @@ import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.height
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
@@ -90,7 +92,7 @@ class MainActivity : ComponentActivity() {
                 text = {
                     Column {
                         Text("Nhập địa chỉ IP của máy kia (xem trong Cài đặt Wi-Fi trên máy đó), ví dụ 192.168.43.5")
-                        androidx.compose.foundation.layout.Spacer(Modifier.height(8.dp))
+                        Spacer(Modifier.height(8.dp))
                         OutlinedTextField(
                             value = manualIp,
                             onValueChange = { manualIp = it },
