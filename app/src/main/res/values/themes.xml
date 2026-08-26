@@ -1,0 +1,4 @@
+<resources xmlns:tools="http://schemas.android.com/tools">
+    <style name="Theme.LocalConnect" parent="Theme.AppCompat.DayNight.NoActionBar" />
+    <style name="Theme.LocalConnect.Call" parent="Theme.AppCompat.NoActionBar" />
+</resources>

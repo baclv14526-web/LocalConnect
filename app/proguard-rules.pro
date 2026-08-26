@@ -1,0 +1,3 @@
+-keep class com.localconnect.app.model.** { *; }
+-keep class org.webrtc.** { *; }
+-dontwarn org.webrtc.**
