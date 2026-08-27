@@ -8,5 +8,6 @@ enum class MessageType {
     CALL_ANSWER,
     CALL_ICE,
     CALL_END,
-    PRESENCE_BYE
+    PRESENCE_BYE,
+    PEER_LIST   // GO (Group Owner) broadcast danh sách id/tên/IP của mọi người trong nhóm
 }

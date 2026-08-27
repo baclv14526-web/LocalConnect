@@ -1,35 +1,53 @@
 # LocalConnect
 
-Ứng dụng Android (Kotlin) cho **nhóm tối đa 5 người** liên lạc qua **Wi-Fi hotspot băng tần 2.4GHz nội bộ, không cần Internet**:
+Ứng dụng Android (Kotlin) cho **nhóm tối đa 5 người** liên lạc qua **Wi-Fi Direct**, không cần Internet, không cần bật Điểm phát Wi-Fi (Hotspot) thủ công:
 
-- 🔎 **Tự động tìm nhau** trong mạng bằng Network Service Discovery (mDNS) — mở app là thấy nhau, không cần nhập IP.
-- 💬 **Chat nhóm** (tối đa 5 người) + **chat riêng 1-1**, lưu lịch sử bằng Room (SQLite), gửi qua kênh TCP nội bộ.
+- 🔗 **Tự tạo mạng bằng Wi-Fi Direct** (`WifiP2pManager`) — 1 máy "Tạo nhóm", các máy khác "Tìm & tham gia". Không phụ thuộc tính năng cô lập client (AP isolation) mà nhiều hãng (Samsung, Xiaomi...) bật mặc định trên Hotspot chia sẻ mạng thường.
+- 💬 **Chat nhóm** (tối đa 5 người) + **chat riêng 1-1**, lưu lịch sử bằng Room (SQLite).
 - 📎 **Gửi/nhận file** (ảnh, video, tài liệu...) qua kênh TCP riêng, lưu vào `Downloads/LocalConnect`.
-- 📞 **Gọi thoại** và 🎥 **gọi video 1-1** bằng WebRTC — chạy trực tiếp LAN, **không cần STUN/TURN/Internet** vì mọi máy đã cùng subnet của hotspot.
-- 🔔 Chạy nền ổn định nhờ Foreground Service, tự kết nối lại khi có người mới vào mạng.
+- 📞 **Gọi thoại** và 🎥 **gọi video 1-1** bằng WebRTC — chạy trực tiếp trong nhóm Wi-Fi Direct, không cần STUN/TURN/Internet.
+- 🔔 Chạy nền ổn định nhờ Foreground Service.
+
+## Vì sao chuyển sang Wi-Fi Direct thay vì Hotspot thường?
+Điểm phát Wi-Fi (tethering) trên nhiều máy Android (đặc biệt Samsung) **mặc định bật "cô lập client"** — 2 máy cùng nối vào hotspot đó **không thể nói chuyện trực tiếp với nhau**, chỉ máy chủ hotspot mới ra được Internet. Đây là giới hạn phần cứng/driver Wi-Fi, không sửa được từ phía app. Wi-Fi Direct là một API khác hẳn, được thiết kế riêng cho việc các thiết bị nói chuyện trực tiếp (dùng cho Miracast, share file...) nên không bị áp isolation.
+
+## Cách hoạt động của mạng (kỹ thuật)
+1. **1 người bấm "Tạo nhóm"** → máy đó trở thành *Group Owner* (GO) của Wi-Fi Direct.
+2. **Người khác bấm "Tìm nhóm gần đây"** → thấy máy GO trong danh sách quét được → chạm vào để tham gia.
+3. Theo đúng bản chất Wi-Fi Direct, **GO luôn kết nối trực tiếp được tới mọi client** — đây là điều được đảm bảo, không phụ thuộc cài đặt nào.
+4. GO đóng vai trò "bảng tin": mỗi khi có client mới, GO gửi broadcast danh sách (id/tên/IP) của mọi người trong nhóm (message `PEER_LIST`) cho cả nhóm. Ai nhận được sẽ tự động thử nối TCP trực tiếp tới từng người chưa có kết nối → theo thời gian mạng tự hình thành **full-mesh** (ai cũng nối thẳng ai).
+5. Nếu 2 client nào đó (hiếm) không nối thẳng được nhau, **GO tự động relay (chuyển tiếp) hộ** toàn bộ tin nhắn/tín hiệu — nên chat/gọi/gửi file vẫn hoạt động dù không có đường nối trực tiếp.
+6. Vẫn còn nút **"Kết nối bằng IP"** để nối thủ công trong trường hợp cần debug hoặc dự phòng.
 
 ## Giới hạn có chủ đích (thực tế, tránh nổ app)
 - Gọi video/thoại là **1-1**, không phải mesh video nhóm 5 người cùng lúc (mesh WebRTC 5 chiều rất nặng CPU/băng thông trên điện thoại tầm trung). Chat nhóm và gửi file thì đúng cho **cả 5 người cùng lúc**.
-- File được đọc vào RAM khi gửi (phù hợp file vài chục–vài trăm MB trong LAN nội bộ); nếu cần gửi file rất lớn (nhiều GB) nên tách stream, có thể nâng cấp sau.
+- File được đọc vào RAM khi gửi (phù hợp file vài chục–vài trăm MB); nếu cần gửi file rất lớn (nhiều GB) nên tách stream, có thể nâng cấp sau.
+- Nếu người "Tạo nhóm" (Group Owner) thoát app/rời nhóm, cả nhóm sẽ mất kết nối và cần tạo lại nhóm (đúng bản chất kiến trúc star topology qua GO).
 
 ## Cấu trúc dự án
 ```
 app/src/main/java/com/localconnect/app/
-  net/     -> NSD discovery, TCP ConnectionManager, ConnectionService (foreground), FileTransferManager
+  net/     -> WifiDirectManager (hình thành nhóm), ConnectionManager (TCP + roster + relay),
+              ConnectionService (foreground), FileTransferManager
   call/    -> CallManager (WebRTC), CallActivity (UI gọi thoại/video)
   data/    -> Room database (lịch sử chat)
   model/   -> Peer, WireMessage (giao thức JSON qua TCP), MessageType
-  ui/      -> Màn hình Compose: danh sách người dùng, chat
+  ui/      -> Màn hình Compose: WifiDirectSetupScreen (tạo/tham gia nhóm), danh sách người dùng, chat
 ```
 
 **Giao thức mạng**: TCP cổng `8988`, mỗi gói tin là JSON đóng khung bằng 4 byte độ dài (length-prefixed). File và tín hiệu cuộc gọi WebRTC (SDP/ICE) cũng đi qua kênh này, riêng dữ liệu file thực tế đi qua 1 cổng TCP tạm mở riêng để không lẫn với JSON.
 
+## Cách dùng trên điện thoại (5 người)
+1. **1 người** mở app → bấm **"Tạo nhóm (làm chủ nhóm)"**.
+2. **4 người còn lại** mở app → bấm **"Tìm nhóm gần đây"** → đợi vài giây → chạm vào tên máy của người vừa tạo nhóm ở bước 1 để tham gia.
+3. Sau khi tham gia, danh sách người trong nhóm sẽ tự xuất hiện — chọn để chat riêng, hoặc vào "Chat nhóm", hoặc bấm nút gọi thoại/gọi video.
+4. Cần đồng ý các quyền được hỏi: Vị trí (Android ≤12) hoặc Wi-Fi lân cận (Android 13+, **chỉ dùng để quét Wi-Fi Direct, KHÔNG dùng để định vị**), Camera, Micro, Thông báo.
+
 ## Build & chạy thử bằng Android Studio
 1. Mở thư mục này bằng Android Studio (Hedgehog trở lên).
 2. Đợi Gradle sync xong (lần đầu cần Internet để tải dependency).
-3. Kết nối 2+ điện thoại vào **cùng một điểm phát Wi-Fi hotspot 2.4GHz**, cài & mở app trên từng máy.
-4. Cấp đủ quyền Camera/Micro/Thông báo khi được hỏi.
-5. Ở danh sách, các máy khác sẽ tự xuất hiện sau vài giây (mDNS).
+3. Cài & mở app trên 2+ điện thoại (bật Wi-Fi trên cả 2, không cần nối chung mạng nào).
+4. Làm theo phần "Cách dùng trên điện thoại" ở trên.
 
 ## Build APK ký sẵn bằng GitHub Actions (không cần máy tính có Android Studio)
 Repo đã có sẵn `.github/workflows/build.yml`:
@@ -58,7 +76,4 @@ Nếu không làm bước này, **mỗi lần build workflow sẽ tự sinh keys
 ## Cài đặt trên điện thoại
 - Yêu cầu **Android 9 (API 28) trở lên**.
 - Vì là app tự ký (không phải từ Google Play/Play Protect), khi cài lần đầu Android sẽ cảnh báo "nguồn không xác định" — vào **Cài đặt → Bảo mật → Cho phép cài từ nguồn này** rồi cài tiếp.
-- Cài trên cả 5 máy, cùng nối vào 1 hotspot Wi-Fi 2.4GHz, mở app lên là dùng được — không cần cấu hình IP thủ công.
-
-## Xin quyền khi mở app lần đầu
-App sẽ hỏi quyền: Camera, Micro, Thông báo (Android 13+), quyền truy cập file media (để gửi/nhận file). Cần đồng ý đủ để gọi video/thoại và gửi file hoạt động.
+- Cài trên cả 5 máy. **Không cần bật Điểm phát Wi-Fi/Hotspot gì cả** — chỉ cần bật Wi-Fi, app sẽ tự tạo mạng Wi-Fi Direct riêng.

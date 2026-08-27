@@ -2,6 +2,7 @@ package com.localconnect.app
 
 import android.app.Application
 import android.net.Uri
+import android.net.wifi.p2p.WifiP2pDevice
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.localconnect.app.data.ChatRepository
@@ -9,16 +10,18 @@ import com.localconnect.app.data.GROUP_CONVERSATION_ID
 import com.localconnect.app.data.MessageEntity
 import com.localconnect.app.model.MessageType
 import com.localconnect.app.model.Peer
-import com.localconnect.app.model.WireMessage
+import com.localconnect.app.net.CONTROL_PORT
 import com.localconnect.app.net.ConnectionManager
 import com.localconnect.app.net.DeviceIdentity
 import com.localconnect.app.net.FileTransferManager
-import com.localconnect.app.net.NsdDiscoveryManager
+import com.localconnect.app.net.WifiDirectManager
+import com.localconnect.app.net.WifiDirectState
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
@@ -29,22 +32,24 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     private val repo = ChatRepository(app)
     private val fileManager = FileTransferManager(app)
-    private val nsd = NsdDiscoveryManager(app)
 
     val myId: String get() = DeviceIdentity.myId
     val myName: String get() = DeviceIdentity.myName
 
-    val peers: StateFlow<List<Peer>> = combine(
-        nsd.discoveredPeers, ConnectionManager.connectedPeerIds
-    ) { discovered, connectedIds ->
-        discovered.values.map { it.copy(isConnected = connectedIds.contains(it.id)) }
-            .sortedBy { it.name }
-    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+    val wifiDirectState: StateFlow<WifiDirectState> = WifiDirectManager.state
+
+    /** Danh sách người đang có kết nối TCP thật sự (đã hình thành qua Wi-Fi Direct + roster). */
+    val peers: StateFlow<List<Peer>> = ConnectionManager.livePeers
+        .map { map ->
+            map.values.map { Peer(it.id, it.name, it.host, CONTROL_PORT, isConnected = true) }
+                .sortedBy { it.name }
+        }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
     private val _incomingCall = MutableStateFlow<IncomingCall?>(null)
     val incomingCall: StateFlow<IncomingCall?> = _incomingCall
 
-    fun conversation(id: String): kotlinx.coroutines.flow.Flow<List<MessageEntity>> = repo.observeConversation(id)
+    fun conversation(id: String): Flow<List<MessageEntity>> = repo.observeConversation(id)
 
     init {
         viewModelScope.launch {
@@ -72,37 +77,47 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     fun clearIncomingCall() { _incomingCall.value = null }
 
+    // ---------- Wi-Fi Direct: tạo / tham gia / rời nhóm ----------
+
+    fun createGroup() = WifiDirectManager.createGroup()
+
+    fun discoverNearbyGroups() = WifiDirectManager.discoverPeers()
+
+    fun joinGroup(device: WifiP2pDevice) = WifiDirectManager.connect(device)
+
+    fun leaveGroup() {
+        WifiDirectManager.removeGroup()
+        ConnectionManager.disconnectAllPeers()
+    }
+
+    fun clearWifiDirectError() = WifiDirectManager.clearError()
+
+    // ---------- Kết nối thủ công bằng IP (dự phòng khi cần) ----------
+
     private val _connectStatus = MutableStateFlow<String?>(null)
     val connectStatus: StateFlow<String?> = _connectStatus
 
-    /**
-     * Kết nối thủ công bằng địa chỉ IP, dùng khi mDNS (tự tìm nhau) không hoạt động.
-     * Cũng là cách để CHẨN ĐOÁN: nếu kết nối thủ công cũng thất bại/timeout thì rất có thể
-     * mạng hotspot đang bật "cô lập client" (AP isolation) chứ không phải lỗi tìm kiếm.
-     */
     fun connectManually(ip: String) {
         val host = ip.trim()
         if (host.isEmpty()) return
         _connectStatus.value = "Đang thử kết nối tới $host..."
-        val peer = Peer(id = "manual-$host", name = host, host = host, port = com.localconnect.app.net.CONTROL_PORT)
-        ConnectionManager.connectToPeer(peer, myId, myName)
+        val before = ConnectionManager.livePeers.value.size
+        ConnectionManager.connectToPeer(Peer(id = "manual-$host", name = host, host = host, port = CONTROL_PORT), myId, myName)
         viewModelScope.launch {
-            val before = ConnectionManager.connectedPeerIds.value
             val result = withTimeoutOrNull(6000) {
-                ConnectionManager.connectedPeerIds.first { it.size > before.size }
+                ConnectionManager.livePeers.first { it.size > before }
             }
             _connectStatus.value = if (result != null) {
                 "Đã kết nối thành công tới $host ✅"
             } else {
-                "Không kết nối được tới $host sau 6 giây.\n" +
-                    "Rất có thể mạng hotspot đang bật \"cô lập client\" (AP isolation) — kiểm tra " +
-                    "Cài đặt > Điểm phát Wi-Fi > Nâng cao trên máy đang phát hotspot, hoặc thử dùng " +
-                    "một bộ phát Wi-Fi (router) khác không cô lập thiết bị."
+                "Không kết nối được tới $host sau 6 giây."
             }
         }
     }
 
     fun clearConnectStatus() { _connectStatus.value = null }
+
+    // ---------- Chat / gửi file ----------
 
     fun sendGroupText(text: String) = viewModelScope.launch {
         val wire = repo.saveOutgoingText(GROUP_CONVERSATION_ID, myId, myName, text)

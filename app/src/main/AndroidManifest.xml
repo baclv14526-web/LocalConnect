@@ -2,11 +2,19 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools">
 
-    <!-- Network / Wi-Fi (hoạt động trong LAN hotspot, không cần Internet) -->
+    <!-- Network / Wi-Fi -->
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
+    <uses-permission android:name="android.permission.CHANGE_WIFI_STATE" />
     <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+
+    <!-- Wi-Fi Direct: cần vị trí (Android <=12) hoặc NEARBY_WIFI_DEVICES (Android 13+)
+         để quét/kết nối thiết bị lân cận. App KHÔNG dùng các quyền này để định vị người dùng. -->
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" android:maxSdkVersion="32" />
+    <uses-permission android:name="android.permission.NEARBY_WIFI_DEVICES"
+        android:usesPermissionFlags="neverForLocation"
+        tools:targetApi="33" />
 
     <!-- Gọi thoại / gọi video -->
     <uses-permission android:name="android.permission.CAMERA" />

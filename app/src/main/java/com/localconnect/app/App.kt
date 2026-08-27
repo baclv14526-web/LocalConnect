@@ -5,11 +5,13 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.os.Build
 import com.localconnect.app.net.DeviceIdentity
+import com.localconnect.app.net.WifiDirectManager
 
 class App : Application() {
     override fun onCreate() {
         super.onCreate()
         DeviceIdentity.init(this)
+        WifiDirectManager.init(this)
         createNotificationChannels()
     }
 

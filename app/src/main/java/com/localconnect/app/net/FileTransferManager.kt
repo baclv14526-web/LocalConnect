@@ -166,7 +166,7 @@ class FileTransferManager(private val context: Context) {
     }
 }
 
-/** Bảng tra cứu IP hiện tại của từng peer (cập nhật bởi NsdDiscoveryManager) để mở kết nối file/ICE. */
+/** Bảng tra cứu IP hiện tại của từng peer (được ConnectionManager cập nhật khi bắt tay HELLO) để mở kết nối file/ICE. */
 object PeerHostRegistry {
     private val map = HashMap<String, String>()
     @Synchronized fun update(peerId: String, host: String) { map[peerId] = host }

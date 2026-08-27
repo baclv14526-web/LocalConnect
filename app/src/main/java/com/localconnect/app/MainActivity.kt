@@ -2,7 +2,6 @@ package com.localconnect.app
 
 import android.content.Intent
 import android.net.Uri
-import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -20,7 +19,6 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
-import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import androidx.core.content.ContextCompat.startForegroundService
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -35,6 +33,7 @@ import com.localconnect.app.model.Peer
 import com.localconnect.app.net.ConnectionService
 import com.localconnect.app.ui.ChatScreen
 import com.localconnect.app.ui.PeerListScreen
+import com.localconnect.app.ui.WifiDirectSetupScreen
 import com.localconnect.app.ui.theme.LocalConnectTheme
 import com.localconnect.app.util.Permissions
 
@@ -82,6 +81,7 @@ class MainActivity : ComponentActivity() {
         val peers by vm.peers.collectAsStateWithLifecycle()
         val incomingCall by vm.incomingCall.collectAsStateWithLifecycle()
         val connectStatus by vm.connectStatus.collectAsStateWithLifecycle()
+        val wifiDirectState by vm.wifiDirectState.collectAsStateWithLifecycle()
         var showManualConnectDialog by remember { mutableStateOf(false) }
         var manualIp by remember { mutableStateOf("") }
 
@@ -91,12 +91,12 @@ class MainActivity : ComponentActivity() {
                 title = { Text("Kết nối bằng IP") },
                 text = {
                     Column {
-                        Text("Nhập địa chỉ IP của máy kia (xem trong Cài đặt Wi-Fi trên máy đó), ví dụ 192.168.43.5")
+                        Text("Nhập địa chỉ IP của máy kia (xem trong Cài đặt Wi-Fi trên máy đó), ví dụ 192.168.49.5")
                         Spacer(Modifier.height(8.dp))
                         OutlinedTextField(
                             value = manualIp,
                             onValueChange = { manualIp = it },
-                            placeholder = { Text("192.168.43.5") },
+                            placeholder = { Text("192.168.49.5") },
                             singleLine = true
                         )
                     }
@@ -141,13 +141,26 @@ class MainActivity : ComponentActivity() {
             )
         }
 
+        if (!wifiDirectState.groupFormed) {
+            // Chưa vào nhóm nào -> hiện màn hình Tạo nhóm / Tìm & tham gia nhóm Wi-Fi Direct
+            WifiDirectSetupScreen(
+                state = wifiDirectState,
+                onCreateGroup = { vm.createGroup() },
+                onDiscover = { vm.discoverNearbyGroups() },
+                onJoin = { device -> vm.joinGroup(device) }
+            )
+            return
+        }
+
         when (val s = screen) {
             Screen.PeerList -> PeerListScreen(
                 peers = peers,
+                isHost = wifiDirectState.isGroupOwner,
                 onOpenChat = { peer -> screen = Screen.DirectChat(peer) },
                 onCall = { peer, isVideo -> launchCall(peer.id, peer.name, isVideo, incoming = false, remoteSdp = null) },
                 onOpenGroupChat = { screen = Screen.GroupChat },
-                onManualConnect = { manualIp = ""; showManualConnectDialog = true }
+                onManualConnect = { manualIp = ""; showManualConnectDialog = true },
+                onLeaveGroup = { vm.leaveGroup(); screen = Screen.PeerList }
             )
             Screen.GroupChat -> {
                 val messages by vm.conversation(GROUP_CONVERSATION_ID).collectAsStateWithLifecycle(initialValue = emptyList())

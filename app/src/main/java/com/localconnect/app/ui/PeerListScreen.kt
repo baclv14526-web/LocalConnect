@@ -7,6 +7,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Call
+import androidx.compose.material.icons.filled.ExitToApp
 import androidx.compose.material.icons.filled.Videocam
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
@@ -18,12 +19,24 @@ import com.localconnect.app.model.Peer
 @Composable
 fun PeerListScreen(
     peers: List<Peer>,
+    isHost: Boolean,
     onOpenChat: (Peer) -> Unit,
     onCall: (Peer, Boolean) -> Unit,
     onOpenGroupChat: () -> Unit,
-    onManualConnect: () -> Unit
+    onManualConnect: () -> Unit,
+    onLeaveGroup: () -> Unit
 ) {
     Scaffold(
+        topBar = {
+            TopAppBar(
+                title = { Text(if (isHost) "Nhóm của bạn (chủ nhóm)" else "Nhóm Wi-Fi Direct") },
+                actions = {
+                    IconButton(onClick = onLeaveGroup) {
+                        Icon(Icons.Filled.ExitToApp, contentDescription = "Rời nhóm")
+                    }
+                }
+            )
+        },
         floatingActionButton = {
             ExtendedFloatingActionButton(onClick = onManualConnect, icon = {
                 Icon(Icons.Filled.Add, contentDescription = null)
@@ -33,15 +46,14 @@ fun PeerListScreen(
         Column(Modifier.fillMaxSize().padding(padding)) {
             ListItem(
                 headlineContent = { Text("Chat nhóm (tối đa 5 người)") },
-                supportingContent = { Text("${peers.count { it.isConnected }} người đang trực tuyến") },
+                supportingContent = { Text("${peers.size} người đang trực tuyến") },
                 modifier = Modifier.clickable { onOpenGroupChat() }
             )
             HorizontalDivider()
             if (peers.isEmpty()) {
                 Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                     Text(
-                        "Đang tìm thiết bị khác trong mạng Wi-Fi...\n" +
-                            "Hãy chắc chắn mọi người cùng kết nối vào 1 điểm phát Wi-Fi.\n" +
+                        "Đang chờ người khác tham gia nhóm...\n" +
                             "Nếu chờ lâu không thấy, bấm \"Kết nối bằng IP\" bên dưới để nhập IP thủ công.",
                         textAlign = androidx.compose.ui.text.style.TextAlign.Center,
                         modifier = Modifier.padding(24.dp)
@@ -52,14 +64,14 @@ fun PeerListScreen(
                     items(peers, key = { it.id }) { peer ->
                         ListItem(
                             headlineContent = { Text(peer.name) },
-                            supportingContent = { Text(if (peer.isConnected) "Đã kết nối · ${peer.host}" else "Đang kết nối...") },
+                            supportingContent = { Text("Đã kết nối · ${peer.host}") },
                             modifier = Modifier.clickable { onOpenChat(peer) },
                             trailingContent = {
                                 Row {
-                                    IconButton(onClick = { onCall(peer, false) }, enabled = peer.isConnected) {
+                                    IconButton(onClick = { onCall(peer, false) }) {
                                         Icon(Icons.Filled.Call, contentDescription = "Gọi thoại")
                                     }
-                                    IconButton(onClick = { onCall(peer, true) }, enabled = peer.isConnected) {
+                                    IconButton(onClick = { onCall(peer, true) }) {
                                         Icon(Icons.Filled.Videocam, contentDescription = "Gọi video")
                                     }
                                 }
