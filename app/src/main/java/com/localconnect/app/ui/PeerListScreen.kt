@@ -16,6 +16,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import com.localconnect.app.model.Peer
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun PeerListScreen(
     peers: List<Peer>,
