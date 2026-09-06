@@ -3,32 +3,37 @@ package com.localconnect.app.call
 import android.Manifest
 import android.content.pm.PackageManager
 import android.os.Bundle
+import android.widget.Button
 import android.widget.TextView
 import android.widget.Toast
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
-import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.lifecycleScope
 import com.localconnect.app.R
 import com.localconnect.app.model.MessageType
-import com.localconnect.app.model.WireMessage
 import com.localconnect.app.net.ConnectionManager
-import com.localconnect.app.net.DeviceIdentity
 import kotlinx.coroutines.launch
 import org.webrtc.EglBase
 import org.webrtc.RendererCommon
 import org.webrtc.SurfaceViewRenderer
 import org.webrtc.VideoTrack
 
-const val EXTRA_PEER_ID = "peer_id"
-const val EXTRA_PEER_NAME = "peer_name"
-const val EXTRA_IS_VIDEO = "is_video"
+const val EXTRA_PEER_ID     = "peer_id"
+const val EXTRA_PEER_NAME   = "peer_name"
+const val EXTRA_IS_VIDEO    = "is_video"
 const val EXTRA_IS_INCOMING = "is_incoming"
-const val EXTRA_REMOTE_SDP = "remote_sdp"
+const val EXTRA_REMOTE_SDP  = "remote_sdp"
 
 /**
- * Màn hình gọi thoại/gọi video 1-1 trong mạng LAN. Dùng XML thay vì Compose vì
- * SurfaceViewRenderer của WebRTC là một View cổ điển (không có bản Compose chính thức).
+ * Màn hình gọi thoại/gọi video 1-1.
+ * Dùng XML layout (activity_call.xml) vì SurfaceViewRenderer của WebRTC là View cổ điển.
+ * Flow:
+ *   - Xin quyền Mic (+ Camera nếu là video call) trước.
+ *   - Sau khi có quyền mới khởi động CallManager (tránh crash khi chưa có quyền).
+ *   - Bên gọi: makeOffer=true → tạo SDP offer → gửi qua ConnectionManager.
+ *   - Bên nghe: makeOffer=false → nhận SDP offer từ Intent → trả SDP answer.
+ *   - ICE candidate trao đổi tự động qua ConnectionManager.incomingMessages.
  */
 class CallActivity : AppCompatActivity(), CallManager.Listener {
 
@@ -37,31 +42,53 @@ class CallActivity : AppCompatActivity(), CallManager.Listener {
     private lateinit var localView: SurfaceViewRenderer
     private lateinit var remoteView: SurfaceViewRenderer
     private lateinit var statusText: TextView
+    private lateinit var btnEndCall: Button
+    private lateinit var btnToggleMic: Button
+    private lateinit var btnToggleCam: Button
+
     private var micEnabled = true
     private var camEnabled = true
+    private var callStarted = false
+
+    private var peerId   = ""
+    private var peerName = ""
+    private var isVideo  = false
+    private var isIncoming = false
+    private var remoteSdp: String? = null
+
+    private val permissionLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestMultiplePermissions()
+    ) { grants ->
+        val allGranted = grants.values.all { it }
+        if (allGranted) {
+            startCall()
+        } else {
+            Toast.makeText(this,
+                "Cần cấp quyền Micro${if (isVideo) " và Camera" else ""} để thực hiện cuộc gọi.",
+                Toast.LENGTH_LONG).show()
+            finish()
+        }
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_call)
 
-        val peerId = intent.getStringExtra(EXTRA_PEER_ID) ?: return finish()
-        val peerName = intent.getStringExtra(EXTRA_PEER_NAME) ?: peerId
-        val isVideo = intent.getBooleanExtra(EXTRA_IS_VIDEO, false)
-        val isIncoming = intent.getBooleanExtra(EXTRA_IS_INCOMING, false)
-        val remoteSdp = intent.getStringExtra(EXTRA_REMOTE_SDP)
+        peerId     = intent.getStringExtra(EXTRA_PEER_ID)     ?: return finish()
+        peerName   = intent.getStringExtra(EXTRA_PEER_NAME)   ?: peerId
+        isVideo    = intent.getBooleanExtra(EXTRA_IS_VIDEO, false)
+        isIncoming = intent.getBooleanExtra(EXTRA_IS_INCOMING, false)
+        remoteSdp  = intent.getStringExtra(EXTRA_REMOTE_SDP)
 
-        localView = findViewById(R.id.localView)
+        localView  = findViewById(R.id.localView)
         remoteView = findViewById(R.id.remoteView)
         statusText = findViewById(R.id.callStatusText)
-        statusText.text = if (isIncoming) "Cuộc gọi từ $peerName..." else "Đang gọi $peerName..."
+        btnEndCall    = findViewById(R.id.btnEndCall)
+        btnToggleMic  = findViewById(R.id.btnToggleMic)
+        btnToggleCam  = findViewById(R.id.btnToggleCam)
 
-        if (!hasCallPermissions()) {
-            ActivityCompat.requestPermissions(
-                this,
-                arrayOf(Manifest.permission.RECORD_AUDIO, Manifest.permission.CAMERA),
-                REQ_PERMISSIONS
-            )
-        }
+        statusText.text = if (isIncoming) "Cuộc gọi từ $peerName..." else "Đang gọi $peerName..."
+        btnToggleCam.isEnabled = isVideo
 
         eglBase = EglBase.create()
         localView.init(eglBase.eglBaseContext, null)
@@ -70,74 +97,102 @@ class CallActivity : AppCompatActivity(), CallManager.Listener {
         remoteView.setScalingType(RendererCommon.ScalingType.SCALE_ASPECT_FIT)
         localView.setMirror(true)
 
-        callManager = CallManager(this, eglBase, peerId, isVideo, this)
-        callManager.start(makeOffer = !isIncoming)
-        if (isIncoming && remoteSdp != null) {
-            callManager.onRemoteOffer(remoteSdp)
-        }
-
-        findViewById<android.widget.Button>(R.id.btnEndCall).setOnClickListener {
-            callManager.hangUp()
-            finish()
-        }
-        findViewById<android.widget.Button>(R.id.btnToggleMic).setOnClickListener {
-            micEnabled = !micEnabled
-            callManager.setMicEnabled(micEnabled)
-        }
-        findViewById<android.widget.Button>(R.id.btnToggleCam).setOnClickListener {
-            camEnabled = !camEnabled
-            callManager.setCameraEnabled(camEnabled)
-        }
-
+        // Lắng nghe tín hiệu WebRTC đến từ peer ngay lập tức (trước cả khi quyền được cấp)
+        // để không bỏ lỡ ICE candidate / answer đến sớm
         lifecycleScope.launch {
             ConnectionManager.incomingMessages.collect { msg ->
                 if (msg.senderId != peerId) return@collect
                 when (msg.type) {
-                    MessageType.CALL_ANSWER -> msg.sdp?.let { callManager.onRemoteAnswer(it) }
-                    MessageType.CALL_ICE -> msg.iceCandidate?.let {
-                        callManager.onRemoteIceCandidate(msg.iceSdpMid, msg.iceSdpMLineIndex, it)
-                    }
+                    MessageType.CALL_ANSWER ->
+                        msg.sdp?.let { if (callStarted) callManager.onRemoteAnswer(it) }
+                    MessageType.CALL_ICE ->
+                        msg.iceCandidate?.let {
+                            if (callStarted) callManager.onRemoteIceCandidate(
+                                msg.iceSdpMid, msg.iceSdpMLineIndex, it
+                            )
+                        }
                     MessageType.CALL_END -> {
-                        Toast.makeText(this@CallActivity, "$peerName đã kết thúc cuộc gọi", Toast.LENGTH_SHORT).show()
-                        finish()
+                        Toast.makeText(this@CallActivity,
+                            "$peerName đã kết thúc cuộc gọi", Toast.LENGTH_SHORT).show()
+                        finishSafely()
                     }
                     else -> {}
                 }
             }
         }
+
+        // Xin quyền; nếu đã có hết thì gọi startCall() ngay
+        val needed = buildList {
+            add(Manifest.permission.RECORD_AUDIO)
+            if (isVideo) add(Manifest.permission.CAMERA)
+        }.filter {
+            ContextCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED
+        }
+
+        if (needed.isEmpty()) {
+            startCall()
+        } else {
+            permissionLauncher.launch(needed.toTypedArray())
+        }
     }
 
-    private fun hasCallPermissions(): Boolean =
-        ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
+    private fun startCall() {
+        callManager = CallManager(this, eglBase, peerId, isVideo, this)
+        callStarted = true
+        callManager.start(makeOffer = !isIncoming)
+        if (isIncoming && remoteSdp != null) {
+            callManager.onRemoteOffer(remoteSdp!!)
+        }
+        setupButtons()
+    }
+
+    private fun setupButtons() {
+        btnEndCall.setOnClickListener {
+            callManager.hangUp()
+            finishSafely()
+        }
+        btnToggleMic.setOnClickListener {
+            micEnabled = !micEnabled
+            callManager.setMicEnabled(micEnabled)
+            btnToggleMic.text = if (micEnabled) "Mic" else "Mic (tắt)"
+        }
+        btnToggleCam.setOnClickListener {
+            camEnabled = !camEnabled
+            callManager.setCameraEnabled(camEnabled)
+            btnToggleCam.text = if (camEnabled) "Cam" else "Cam (tắt)"
+        }
+    }
 
     override fun onLocalStreamReady(track: VideoTrack?) {
-        track?.addSink(localView)
+        runOnUiThread { track?.addSink(localView) }
     }
 
     override fun onRemoteStreamReady(track: VideoTrack?) {
-        track?.addSink(remoteView)
+        runOnUiThread { track?.addSink(remoteView) }
     }
 
     override fun onCallConnected() {
-        runOnUiThread { statusText.text = "Đã kết nối" }
+        runOnUiThread { statusText.text = "Đã kết nối ✅" }
     }
 
     override fun onCallEnded(reason: String) {
         runOnUiThread {
             Toast.makeText(this, reason, Toast.LENGTH_SHORT).show()
-            finish()
+            finishSafely()
         }
+    }
+
+    private fun finishSafely() {
+        if (!isFinishing) finish()
     }
 
     override fun onDestroy() {
         super.onDestroy()
-        callManager.release()
-        localView.release()
-        remoteView.release()
-        eglBase.release()
-    }
-
-    companion object {
-        private const val REQ_PERMISSIONS = 501
+        if (callStarted) {
+            try { callManager.release() } catch (_: Exception) {}
+        }
+        try { localView.release()  } catch (_: Exception) {}
+        try { remoteView.release() } catch (_: Exception) {}
+        try { eglBase.release()    } catch (_: Exception) {}
     }
 }

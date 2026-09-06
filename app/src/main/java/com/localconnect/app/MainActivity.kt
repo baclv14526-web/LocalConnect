@@ -168,7 +168,8 @@ class MainActivity : ComponentActivity() {
                     title = "Chat nhóm",
                     messages = messages,
                     onSend = { text -> vm.sendGroupText(text) },
-                    onPickFile = { pendingFileTarget = null; pickFileLauncher.launch(arrayOf("*/*")) }
+                    onPickFile = { pendingFileTarget = null; pickFileLauncher.launch(arrayOf("*/*")) },
+                    onBack = { screen = Screen.PeerList }
                 )
                 BackHandlerCompat { screen = Screen.PeerList }
             }
@@ -179,7 +180,8 @@ class MainActivity : ComponentActivity() {
                     title = peer.name,
                     messages = messages,
                     onSend = { text -> vm.sendDirectText(peer.id, text) },
-                    onPickFile = { pendingFileTarget = peer.id; pickFileLauncher.launch(arrayOf("*/*")) }
+                    onPickFile = { pendingFileTarget = peer.id; pickFileLauncher.launch(arrayOf("*/*")) },
+                    onBack = { screen = Screen.PeerList }
                 )
                 BackHandlerCompat { screen = Screen.PeerList }
             }
