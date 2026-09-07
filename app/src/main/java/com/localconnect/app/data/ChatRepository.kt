@@ -14,7 +14,9 @@ class ChatRepository(context: Context) {
         dao.observeConversation(conversationId)
 
     suspend fun saveIncomingText(msg: WireMessage) {
-        val conversationId = msg.targetId?.let { msg.senderId } ?: GROUP_CONVERSATION_ID
+        // targetId == null  → tin nhóm, lưu vào GROUP bucket
+        // targetId != null  → tin riêng gửi cho mình, lưu vào bucket của người GỬI (msg.senderId)
+        val conversationId = if (msg.targetId == null) GROUP_CONVERSATION_ID else msg.senderId
         dao.insert(
             MessageEntity(
                 id = msg.id,

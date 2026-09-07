@@ -15,54 +15,53 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
 
-/**
- * Foreground service giữ cho Wi-Fi Direct + TCP server luôn hoạt động khi app chạy nền.
- *
- * Không còn dùng NSD/mDNS + Hotspot thường (bị một số máy như Samsung cô lập client-to-client).
- * Thay vào đó: WifiDirectManager hình thành nhóm Wi-Fi Direct, service này theo dõi kết quả
- * (mình là Group Owner hay client, địa chỉ IP của GO) để thiết lập kết nối TCP tương ứng.
- */
 class ConnectionService : Service() {
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
-    private var lastKnownGroupOwnerAddress: String? = null
+    private var lastConnectedGoIp: String? = null
 
     override fun onCreate() {
         super.onCreate()
         startForeground(NOTIF_ID, buildNotification())
 
-        val myId = DeviceIdentity.myId
+        val myId   = DeviceIdentity.myId
         val myName = DeviceIdentity.myName
 
-        // Server TCP luôn chạy: cả GO lẫn client đều cần lắng nghe, vì sau khi có PEER_LIST,
-        // các máy có thể chủ động nối thẳng tới nhau (full mesh), không chỉ nối tới GO.
         ConnectionManager.startServer(myId, myName)
         WifiDirectManager.startListening()
 
-        var wasGroupFormed = false
         scope.launch {
             WifiDirectManager.state.collect { s ->
-                if (s.groupFormed) {
-                    wasGroupFormed = true
-                    if (s.isGroupOwner) {
+                when {
+                    s.groupFormed && s.isGroupOwner -> {
+                        // Máy này là Group Owner: TCP server đã chạy, đợi client nối vào
                         if (!ConnectionManager.isHost) {
+                            android.util.Log.i("ConnectionService", "Tôi là Group Owner, đặt vai trò Host")
                             ConnectionManager.setRole(host = true, myId, myName)
                         }
-                    } else {
-                        val ip = s.groupOwnerAddress
-                        if (ip != null && ip != lastKnownGroupOwnerAddress) {
-                            lastKnownGroupOwnerAddress = ip
+                    }
+
+                    s.groupFormed && !s.isGroupOwner -> {
+                        // Máy này là client: chủ động nối TCP tới Group Owner
+                        val goIp = s.groupOwnerAddress
+                        if (goIp != null && goIp != lastConnectedGoIp) {
+                            lastConnectedGoIp = goIp
+                            android.util.Log.i("ConnectionService", "Nối TCP tới Group Owner @ $goIp")
                             ConnectionManager.setRole(host = false, myId, myName)
+                            // Dùng IP thật; ID sẽ được xác định trong HELLO handshake bên trong connectToPeer
                             ConnectionManager.connectToPeer(
-                                Peer(id = "host-$ip", name = "Host", host = ip, port = CONTROL_PORT),
+                                Peer(id = goIp, name = "GroupOwner", host = goIp, port = CONTROL_PORT),
                                 myId, myName
                             )
                         }
                     }
-                } else if (wasGroupFormed) {
-                    wasGroupFormed = false
-                    lastKnownGroupOwnerAddress = null
-                    ConnectionManager.disconnectAllPeers()
+
+                    !s.groupFormed && lastConnectedGoIp != null -> {
+                        // Nhóm tan: reset state
+                        android.util.Log.i("ConnectionService", "Nhóm Wi-Fi Direct đã tan")
+                        lastConnectedGoIp = null
+                        ConnectionManager.disconnectAllPeers()
+                    }
                 }
             }
         }
@@ -79,7 +78,7 @@ class ConnectionService : Service() {
     }
 
     private fun buildNotification(): Notification {
-        val openIntent = PendingIntent.getActivity(
+        val pi = PendingIntent.getActivity(
             this, 0, Intent(this, MainActivity::class.java),
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
         )
@@ -87,12 +86,10 @@ class ConnectionService : Service() {
             .setContentTitle(getString(R.string.notif_service_title))
             .setContentText(getString(R.string.notif_service_text))
             .setSmallIcon(android.R.drawable.stat_sys_data_bluetooth)
-            .setContentIntent(openIntent)
+            .setContentIntent(pi)
             .setOngoing(true)
             .build()
     }
 
-    companion object {
-        private const val NOTIF_ID = 1001
-    }
+    companion object { private const val NOTIF_ID = 1001 }
 }

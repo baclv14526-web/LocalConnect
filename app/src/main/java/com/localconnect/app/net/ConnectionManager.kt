@@ -30,25 +30,14 @@ const val CONTROL_PORT = 8988
 
 data class LivePeer(val id: String, val name: String, val host: String)
 
-/**
- * Quản lý toàn bộ kết nối TCP giữa tối đa 5 thiết bị trong nhóm Wi-Fi Direct.
- *
- * Cách hình thành mạng:
- *  1) Wi-Fi Direct tạo nhóm: 1 máy làm Group Owner (GO/"host"), các máy khác join làm client.
- *     Theo đúng bản chất giao thức Wi-Fi Direct, GO LUÔN kết nối trực tiếp được tới mọi client -
- *     đây là điều được đảm bảo, không phụ thuộc cài đặt cô lập của Hotspot thường.
- *  2) GO đóng vai trò "bảng tin" (roster): mỗi khi danh sách client thay đổi, GO gửi broadcast
- *     một message PEER_LIST (id/tên/IP của mọi người) cho cả nhóm. Ai nhận được PEER_LIST sẽ tự
- *     động thử nối TCP trực tiếp tới từng peer chưa có kết nối -> theo thời gian mạng tự hình
- *     thành "full mesh" (ai cũng nối thẳng ai), giữ nguyên hành vi gửi/nhận như bản dùng NSD cũ.
- *  3) Phòng trường hợp hiếm 2 client không nối thẳng được nhau: nếu thiết bị hiện tại là GO và
- *     nhận một message không phải gửi cho chính mình, nó sẽ tự RELAY (chuyển tiếp) hộ.
- */
 object ConnectionManager {
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
-    private val connections = HashMap<String, PeerConnection>()
+
+    // FIX BUG 3: dùng Mutex bảo vệ connections thay vì HashMap thô
+    private val connections = LinkedHashMap<String, PeerConnection>()
     private val connectionsMutex = Mutex()
+
     private var serverSocket: ServerSocket? = null
     private var serverJob: Job? = null
 
@@ -57,21 +46,20 @@ object ConnectionManager {
     private var localId: String = ""
     private var localName: String = ""
 
-    private val _incomingMessages = MutableSharedFlow<WireMessage>(extraBufferCapacity = 64)
+    private val _incomingMessages = MutableSharedFlow<WireMessage>(extraBufferCapacity = 128)
     val incomingMessages = _incomingMessages.asSharedFlow()
 
     private val _livePeers = MutableStateFlow<Map<String, LivePeer>>(emptyMap())
     val livePeers: StateFlow<Map<String, LivePeer>> = _livePeers
 
     private class PeerConnection(
-        val peerId: String,
+        val peerId: String,      // ID THẬT từ HELLO handshake, không phải "host-$ip"
         val peerName: String,
         val socket: Socket,
         val out: DataOutputStream,
         val writeLock: Mutex = Mutex()
     )
 
-    /** Gọi khi biết vai trò của mình trong nhóm Wi-Fi Direct (host = Group Owner). */
     fun setRole(host: Boolean, myId: String, myName: String) {
         isHost = host
         localId = myId
@@ -86,10 +74,10 @@ object ConnectionManager {
             try {
                 val server = ServerSocket(CONTROL_PORT)
                 serverSocket = server
-                Log.i(TAG, "Server đang lắng nghe tại cổng $CONTROL_PORT")
+                Log.i(TAG, "TCP server lắng nghe cổng $CONTROL_PORT")
                 while (true) {
                     val socket = server.accept()
-                    scope.launch { bindSocket(socket, myId, myName) }
+                    scope.launch { bindSocket(socket) }
                 }
             } catch (e: Exception) {
                 Log.w(TAG, "Server dừng: ${e.message}")
@@ -97,101 +85,150 @@ object ConnectionManager {
         }
     }
 
+    /**
+     * Kết nối TCP tới một peer.
+     * FIX BUG 1 & 4: không dùng ID giả "host-$ip" nữa — ID thật được trao đổi
+     * trong HELLO handshake bên trong bindSocket(). Trước khi biết ID thật, chỉ
+     * kiểm tra xem có socket nào đang mở tới host:port đó chưa để tránh kết nối đôi.
+     */
     fun connectToPeer(peer: Peer, myId: String, myName: String) {
         scope.launch {
-            if (peer.id == myId) return@launch
-            if (connections.containsKey(peer.id)) return@launch
+            // Kiểm tra theo IP để tránh kết nối đôi trước khi có ID thật
+            val alreadyConnected = connectionsMutex.withLock {
+                connections.values.any { it.socket.inetAddress?.hostAddress == peer.host }
+            }
+            if (alreadyConnected) {
+                Log.d(TAG, "Đã có kết nối tới ${peer.host}, bỏ qua")
+                return@launch
+            }
             try {
+                Log.i(TAG, "Đang nối TCP tới ${peer.host}:${peer.port}")
                 val socket = Socket()
-                socket.connect(InetSocketAddress(peer.host, peer.port), 5000)
-                bindSocket(socket, myId, myName)
+                socket.connect(InetSocketAddress(peer.host, peer.port), 6000)
+                bindSocket(socket)
             } catch (e: Exception) {
-                Log.w(TAG, "Không kết nối được ${peer.name} (${peer.host}): ${e.message}")
+                Log.w(TAG, "Không kết nối được ${peer.host}: ${e.message}")
             }
         }
     }
 
-    private suspend fun bindSocket(socket: Socket, myId: String, myName: String) {
+    /**
+     * Giao thức bắt tay:
+     *  1) Gửi HELLO của mình (myId, myName) ngay sau khi socket mở.
+     *  2) Đọc HELLO của phía kia → lấy peerId THẬT.
+     *  3) Lưu kết nối theo peerId thật → mọi send/relay sau đó dùng đúng key.
+     *  4) Vào vòng lặp đọc message liên tục cho tới khi socket đóng.
+     */
+    private suspend fun bindSocket(socket: Socket) {
+        var truePeerId: String? = null
         try {
-            val out = DataOutputStream(socket.getOutputStream())
+            val out   = DataOutputStream(socket.getOutputStream())
             val input = DataInputStream(socket.getInputStream())
 
-            writeFramed(out, WireMessage(type = MessageType.HELLO, senderId = myId, senderName = myName).toJson())
+            // --- Bắt tay HELLO ---
+            writeFramed(out, WireMessage(
+                type = MessageType.HELLO,
+                senderId = localId,
+                senderName = localName
+            ).toJson())
 
-            val firstRaw = readFramed(input) ?: return
-            val firstMsg = WireMessage.fromJson(firstRaw)
-            if (firstMsg.type != MessageType.HELLO) return
-            val peerId = firstMsg.senderId
-            if (peerId == myId) { socket.close(); return }
+            val helloRaw = readFramed(input) ?: run {
+                Log.w(TAG, "Không nhận được HELLO từ ${socket.inetAddress?.hostAddress}")
+                return
+            }
+            val helloMsg = WireMessage.fromJson(helloRaw)
+            if (helloMsg.type != MessageType.HELLO) {
+                Log.w(TAG, "Gói đầu tiên không phải HELLO: ${helloMsg.type}")
+                return
+            }
+
+            val peerId   = helloMsg.senderId
+            val peerName = helloMsg.senderName
+            truePeerId   = peerId
+
+            if (peerId == localId) {
+                Log.w(TAG, "Kết nối tới chính mình, bỏ qua")
+                return
+            }
 
             val remoteHost = socket.inetAddress?.hostAddress ?: ""
             PeerHostRegistry.update(peerId, remoteHost)
 
-            val conn = PeerConnection(peerId, firstMsg.senderName, socket, out)
+            // --- Đăng ký kết nối theo ID THẬT ---
+            val conn = PeerConnection(peerId, peerName, socket, out)
             connectionsMutex.withLock {
-                connections[peerId]?.let { old -> try { old.socket.close() } catch (_: Exception) {} }
+                val old = connections[peerId]
+                if (old != null) {
+                    // Đã có kết nối với peer này rồi (hai bên cùng nối nhau) → đóng cái mới
+                    Log.d(TAG, "Đã có kết nối với $peerName, đóng socket thừa")
+                    socket.close()
+                    truePeerId = null
+                    return
+                }
                 connections[peerId] = conn
             }
-            _livePeers.update { it + (peerId to LivePeer(peerId, firstMsg.senderName, remoteHost)) }
-            Log.i(TAG, "Đã kết nối với ${firstMsg.senderName} ($peerId) @ $remoteHost")
+            _livePeers.update { it + (peerId to LivePeer(peerId, peerName, remoteHost)) }
+            Log.i(TAG, "✅ Đã kết nối với $peerName ($peerId) @ $remoteHost")
+
+            // Nếu là Host: gửi roster mới để client biết mọi người
             broadcastRosterIfHost()
 
+            // --- Vòng lặp đọc message ---
             while (true) {
                 val raw = readFramed(input) ?: break
-                val msg = WireMessage.fromJson(raw)
-
-                if (msg.type == MessageType.PEER_LIST) {
-                    handleRoster(msg)
+                val msg = try { WireMessage.fromJson(raw) } catch (e: Exception) {
+                    Log.w(TAG, "Parse message lỗi: ${e.message}")
+                    continue
                 }
 
+                // Roster: client dùng để tự kết nối thêm peer
+                if (msg.type == MessageType.PEER_LIST) {
+                    handleRoster(msg)
+                    continue  // PEER_LIST không emit lên UI
+                }
+
+                // Emit để UI / ViewModel xử lý
                 _incomingMessages.emit(msg)
 
+                // Host relay tin cho peer khác nếu cần
                 if (isHost && msg.senderId != localId) {
                     relay(msg, fromPeerId = peerId)
                 }
             }
         } catch (e: Exception) {
-            Log.w(TAG, "Kết nối lỗi/đóng: ${e.message}")
+            Log.w(TAG, "Socket lỗi (${truePeerId ?: socket.inetAddress?.hostAddress}): ${e.message}")
         } finally {
-            val peerId = connections.entries.firstOrNull { it.value.socket == socket }?.key
-            if (peerId != null) {
-                connectionsMutex.withLock { connections.remove(peerId) }
-                _livePeers.update { it - peerId }
+            if (truePeerId != null) {
+                connectionsMutex.withLock { connections.remove(truePeerId) }
+                _livePeers.update { it - truePeerId!! }
+                Log.i(TAG, "🔌 Mất kết nối với $truePeerId")
                 broadcastRosterIfHost()
             }
             try { socket.close() } catch (_: Exception) {}
         }
     }
 
-    /** Chỉ chạy trên máy GO: chuyển tiếp message không phải của/​cho chính mình. */
-    private suspend fun relay(msg: WireMessage, fromPeerId: String) {
-        if (msg.type == MessageType.PEER_LIST) return
-        when {
-            msg.targetId == null -> sendExcept(msg, fromPeerId)
-            msg.targetId != localId -> sendTo(msg, msg.targetId)
-            else -> {} // gửi thẳng cho host, không cần relay
-        }
-    }
-
-    private fun buildRosterJson(): String {
-        val arr = JSONArray()
-        connections.values.forEach { conn ->
-            arr.put(
-                JSONObject()
-                    .put("id", conn.peerId)
-                    .put("name", conn.peerName)
-                    .put("host", conn.socket.inetAddress?.hostAddress ?: "")
-            )
-        }
-        return arr.toString()
-    }
+    // --- Roster (Host → broadcast danh sách peer cho mọi client) ---
 
     private suspend fun broadcastRosterIfHost() {
         if (!isHost) return
-        val json = buildRosterJson()
-        val msg = WireMessage(type = MessageType.PEER_LIST, senderId = localId, senderName = localName, text = json)
+        val snapshot = connectionsMutex.withLock { connections.values.toList() }
+        if (snapshot.isEmpty()) return
+        val arr = JSONArray()
+        snapshot.forEach { conn ->
+            arr.put(JSONObject()
+                .put("id",   conn.peerId)
+                .put("name", conn.peerName)
+                .put("host", conn.socket.inetAddress?.hostAddress ?: ""))
+        }
+        val msg = WireMessage(
+            type = MessageType.PEER_LIST,
+            senderId = localId,
+            senderName = localName,
+            text = arr.toString()
+        )
         val payload = msg.toJson()
-        connections.values.forEach { conn ->
+        snapshot.forEach { conn ->
             try { conn.writeLock.withLock { writeFramed(conn.out, payload) } } catch (_: Exception) {}
         }
     }
@@ -201,55 +238,95 @@ object ConnectionManager {
         try {
             val arr = JSONArray(json)
             for (i in 0 until arr.length()) {
-                val o = arr.getJSONObject(i)
-                val id = o.getString("id")
+                val o    = arr.getJSONObject(i)
+                val id   = o.getString("id")
                 val name = o.getString("name")
                 val host = o.getString("host")
-                if (id == localId || host.isEmpty() || connections.containsKey(id)) continue
-                connectToPeer(Peer(id = id, name = name, host = host, port = CONTROL_PORT), localId, localName)
+                if (id == localId || host.isEmpty()) return
+                scope.launch {
+                    val already = connectionsMutex.withLock { connections.containsKey(id) }
+                    if (!already) {
+                        connectToPeer(Peer(id = id, name = name, host = host, port = CONTROL_PORT), localId, localName)
+                    }
+                }
             }
         } catch (e: Exception) {
-            Log.w(TAG, "Không đọc được danh sách peer: ${e.message}")
+            Log.w(TAG, "handleRoster lỗi: ${e.message}")
         }
     }
 
-    /** targetId = null -> gửi cho cả nhóm (mọi kết nối hiện có); targetId != null -> gửi riêng. */
+    // --- Relay (Host chuyển tiếp tin cho peer không kết nối thẳng nhau) ---
+
+    private suspend fun relay(msg: WireMessage, fromPeerId: String) {
+        when {
+            msg.targetId == null      -> sendExcept(msg, fromPeerId)   // broadcast
+            msg.targetId != localId   -> sendDirect(msg.targetId, msg) // gửi riêng tới peer khác
+            // targetId == localId: tin gửi cho Host, đã emit ở trên rồi
+        }
+    }
+
+    // --- Public send API ---
+
+    /**
+     * Gửi tin nhắn đi.
+     * - targetId == null  → broadcast cho mọi peer đang kết nối
+     * - targetId != null  → gửi riêng cho đúng peer đó
+     */
     suspend fun send(msg: WireMessage) {
-        val targets = if (msg.targetId != null) listOfNotNull(connections[msg.targetId]) else connections.values.toList()
+        val snapshot = connectionsMutex.withLock { connections.values.toList() }
+        if (snapshot.isEmpty()) {
+            Log.w(TAG, "send() gọi nhưng chưa có kết nối nào!")
+            return
+        }
         val json = msg.toJson()
-        for (conn in targets) {
+        val targets = if (msg.targetId != null) {
+            snapshot.filter { it.peerId == msg.targetId }.also {
+                if (it.isEmpty()) Log.w(TAG, "Không tìm thấy kết nối với targetId=${msg.targetId}")
+            }
+        } else {
+            snapshot
+        }
+        targets.forEach { conn ->
             try {
                 conn.writeLock.withLock { writeFramed(conn.out, json) }
+                Log.d(TAG, "Đã gửi ${msg.type} tới ${conn.peerName}")
             } catch (e: Exception) {
                 Log.w(TAG, "Gửi tới ${conn.peerId} thất bại: ${e.message}")
             }
         }
     }
 
-    private suspend fun sendExcept(msg: WireMessage, excludePeerId: String) {
+    private suspend fun sendExcept(msg: WireMessage, excludeId: String) {
         val json = msg.toJson()
-        connections.filterKeys { it != excludePeerId }.values.forEach { conn ->
+        val snapshot = connectionsMutex.withLock {
+            connections.values.filter { it.peerId != excludeId }
+        }
+        snapshot.forEach { conn ->
             try { conn.writeLock.withLock { writeFramed(conn.out, json) } } catch (_: Exception) {}
         }
     }
 
-    private suspend fun sendTo(msg: WireMessage, targetId: String) {
-        val conn = connections[targetId] ?: return
+    private suspend fun sendDirect(targetId: String, msg: WireMessage) {
+        val conn = connectionsMutex.withLock { connections[targetId] } ?: return
         val json = msg.toJson()
         try { conn.writeLock.withLock { writeFramed(conn.out, json) } } catch (_: Exception) {}
     }
 
     fun connectedIds(): Set<String> = connections.keys.toSet()
 
-    /** Đóng hết kết nối peer hiện tại (khi rời nhóm) nhưng GIỮ server đang lắng nghe. */
     fun disconnectAllPeers() {
-        connections.values.forEach { try { it.socket.close() } catch (_: Exception) {} }
-        connections.clear()
-        _livePeers.value = emptyMap()
-        isHost = false
+        scope.launch {
+            val snapshot = connectionsMutex.withLock {
+                val list = connections.values.toList()
+                connections.clear()
+                list
+            }
+            snapshot.forEach { try { it.socket.close() } catch (_: Exception) {} }
+            _livePeers.value = emptyMap()
+            isHost = false
+        }
     }
 
-    /** Tắt hẳn (khi service bị huỷ / app đóng). */
     fun stopAll() {
         disconnectAllPeers()
         try { serverSocket?.close() } catch (_: Exception) {}
@@ -257,6 +334,8 @@ object ConnectionManager {
         serverJob?.cancel()
         serverJob = null
     }
+
+    // --- Framing: 4-byte length prefix + UTF-8 JSON body ---
 
     private fun writeFramed(out: DataOutputStream, json: String) {
         val bytes = json.toByteArray(StandardCharsets.UTF_8)
