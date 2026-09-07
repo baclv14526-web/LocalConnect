@@ -22,6 +22,7 @@ import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.core.content.ContextCompat.startForegroundService
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.localconnect.app.util.NotificationHelper
 import com.localconnect.app.call.CallActivity
 import com.localconnect.app.call.EXTRA_IS_INCOMING
 import com.localconnect.app.call.EXTRA_IS_VIDEO
@@ -125,18 +126,26 @@ class MainActivity : ComponentActivity() {
         }
 
         incomingCall?.let { call ->
+            // Dừng chuông — UI đang hiển thị nên người dùng đang tương tác
+            LaunchedEffect(call) {
+                NotificationHelper.cancelCallNotification(this@MainActivity)
+            }
             AlertDialog(
                 onDismissRequest = { vm.clearIncomingCall() },
-                title = { Text(if (call.isVideo) "Cuộc gọi video đến" else "Cuộc gọi thoại đến") },
+                title = { Text(if (call.isVideo) "📹 Cuộc gọi video đến" else "📞 Cuộc gọi thoại đến") },
                 text = { Text("${call.peerName} đang gọi cho bạn") },
                 confirmButton = {
                     TextButton(onClick = {
+                        NotificationHelper.stopRinging()
                         launchCall(call.peerId, call.peerName, call.isVideo, incoming = true, remoteSdp = call.sdp)
                         vm.clearIncomingCall()
-                    }) { Text("Trả lời") }
+                    }) { Text("✅ Trả lời") }
                 },
                 dismissButton = {
-                    TextButton(onClick = { vm.clearIncomingCall() }) { Text("Từ chối") }
+                    TextButton(onClick = {
+                        NotificationHelper.stopRinging()
+                        vm.clearIncomingCall()
+                    }) { Text("❌ Từ chối") }
                 }
             )
         }

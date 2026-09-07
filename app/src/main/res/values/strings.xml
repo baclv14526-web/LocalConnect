@@ -1,7 +1,13 @@
 <resources>
     <string name="app_name">LocalConnect</string>
     <string name="notif_channel_service">Kết nối mạng nội bộ</string>
-    <string name="notif_channel_call">Cuộc gọi</string>
+    <string name="notif_channel_call">Cuộc gọi đến</string>
+    <string name="notif_channel_message">Tin nhắn mới</string>
     <string name="notif_service_title">LocalConnect đang chạy nền</string>
-    <string name="notif_service_text">Đang giữ kết nối với nhóm 5 người trong mạng Wi-Fi</string>
+    <string name="notif_service_text">Đang giữ kết nối với nhóm trong mạng Wi-Fi</string>
+    <string name="notif_incoming_call_title">Cuộc gọi %1$s đến</string>
+    <string name="notif_incoming_call_text">%1$s đang gọi cho bạn</string>
+    <string name="notif_new_message_title">%1$s nhắn tin</string>
+    <string name="action_answer">Trả lời</string>
+    <string name="action_decline">Từ chối</string>
 </resources>

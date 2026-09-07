@@ -27,6 +27,8 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <uses-permission android:name="android.permission.VIBRATE" />
+    <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT" />
 
     <!-- Gửi / nhận file -->
     <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
@@ -66,6 +68,14 @@
         </activity>
 
         <activity
+            android:name=".call.IncomingCallActivity"
+            android:exported="false"
+            android:showWhenLocked="true"
+            android:turnScreenOn="true"
+            android:launchMode="singleInstance"
+            android:theme="@style/Theme.LocalConnect.Call" />
+
+        <activity
             android:name=".call.CallActivity"
             android:exported="false"
             android:excludeFromRecents="false"
@@ -74,6 +84,10 @@
             android:turnScreenOn="true"
             android:configChanges="orientation|screenSize|keyboardHidden"
             android:theme="@style/Theme.LocalConnect.Call" />
+
+        <receiver
+            android:name=".util.DeclineCallReceiver"
+            android:exported="false" />
 
         <service
             android:name=".net.ConnectionService"

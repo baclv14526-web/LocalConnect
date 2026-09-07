@@ -16,6 +16,7 @@ import com.localconnect.app.net.DeviceIdentity
 import com.localconnect.app.net.FileTransferManager
 import com.localconnect.app.net.WifiDirectManager
 import com.localconnect.app.net.WifiDirectState
+import com.localconnect.app.util.NotificationHelper
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -55,19 +56,50 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch {
             ConnectionManager.incomingMessages.collect { msg ->
                 when (msg.type) {
-                    MessageType.TEXT -> repo.saveIncomingText(msg)
+                    MessageType.TEXT -> {
+                        repo.saveIncomingText(msg)
+                        // Rung + notification cho tin nhắn đến
+                        NotificationHelper.notifyNewMessage(
+                            getApplication(),
+                            senderName = msg.senderName,
+                            preview = msg.text ?: ""
+                        )
+                    }
                     MessageType.FILE_OFFER -> {
-                        val convId = msg.targetId?.let { msg.senderId } ?: GROUP_CONVERSATION_ID
+                        val convId = if (msg.targetId == null) GROUP_CONVERSATION_ID else msg.senderId
                         fileManager.receiveFile(msg, object : FileTransferManager.Listener {
                             override fun onReceiveComplete(fileName: String, savedPath: String?) {
                                 viewModelScope.launch {
-                                    repo.saveFileRecord(convId, msg.senderId, msg.senderName, fileName, savedPath, msg.fileSize, isMine = false)
+                                    repo.saveFileRecord(convId, msg.senderId, msg.senderName,
+                                        fileName, savedPath, msg.fileSize, isMine = false)
+                                    NotificationHelper.notifyNewMessage(
+                                        getApplication(),
+                                        senderName = msg.senderName,
+                                        preview = "📎 $fileName"
+                                    )
                                 }
                             }
                         })
                     }
                     MessageType.CALL_OFFER -> {
-                        _incomingCall.value = IncomingCall(msg.senderId, msg.senderName, msg.isVideoCall, msg.sdp ?: "")
+                        _incomingCall.value = IncomingCall(
+                            msg.senderId, msg.senderName, msg.isVideoCall, msg.sdp ?: ""
+                        )
+                        // Nhạc chuông + rung + full-screen notification
+                        NotificationHelper.notifyIncomingCall(
+                            context    = getApplication(),
+                            peerId     = msg.senderId,
+                            peerName   = msg.senderName,
+                            isVideo    = msg.isVideoCall,
+                            remoteSdp  = msg.sdp ?: ""
+                        )
+                    }
+                    MessageType.CALL_END -> {
+                        // Bên kia từ chối / kết thúc — dừng chuông nếu đang đổ
+                        NotificationHelper.cancelCallNotification(getApplication())
+                        if (_incomingCall.value?.peerId == msg.senderId) {
+                            _incomingCall.value = null
+                        }
                     }
                     else -> {}
                 }
