@@ -5,6 +5,7 @@ import android.net.Uri
 import android.net.wifi.p2p.WifiP2pDevice
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.localconnect.app.call.CallSignalManager
 import com.localconnect.app.data.ChatRepository
 import com.localconnect.app.data.GROUP_CONVERSATION_ID
 import com.localconnect.app.data.MessageEntity
@@ -82,6 +83,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                         })
                     }
                     MessageType.CALL_OFFER -> {
+                        CallSignalManager.onSignalReceived(msg)
                         _incomingCall.value = IncomingCall(
                             msg.senderId, msg.senderName, msg.isVideoCall, msg.sdp ?: ""
                         )
@@ -94,7 +96,11 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                             remoteSdp  = msg.sdp ?: ""
                         )
                     }
+                    MessageType.CALL_ICE, MessageType.CALL_ANSWER -> {
+                        CallSignalManager.onSignalReceived(msg)
+                    }
                     MessageType.CALL_END -> {
+                        CallSignalManager.onSignalReceived(msg)
                         // Bên kia từ chối / kết thúc — dừng chuông nếu đang đổ
                         NotificationHelper.cancelCallNotification(getApplication())
                         if (_incomingCall.value?.peerId == msg.senderId) {

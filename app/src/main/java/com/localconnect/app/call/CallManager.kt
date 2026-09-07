@@ -42,10 +42,18 @@ class CallManager(
     private var localVideoTrack: VideoTrack? = null
     private var surfaceTextureHelper: SurfaceTextureHelper? = null
 
+    private val queuedRemoteCandidates = mutableListOf<IceCandidate>()
+    private var isRemoteDescriptionSet = false
+
     fun start(makeOffer: Boolean) {
         initFactory()
         peerConnection = createPeerConnection()
         addLocalTracks()
+        // Nạp trước bất kỳ candidate nào đã được buffer trong CallSignalManager khi máy đang đổ chuông
+        val buffered = CallSignalManager.drainBufferedIce(peerId)
+        buffered.forEach {
+            onRemoteIceCandidate(it.sdpMid, it.sdpMLineIndex, it.sdp)
+        }
         if (makeOffer) createOffer()
     }
 
@@ -55,9 +63,15 @@ class CallManager(
                 .setEnableInternalTracer(false)
                 .createInitializationOptions()
         )
+        // Bỏ qua mạng di động (4G/5G) và VPN để WebRTC chỉ dùng Wi-Fi / Wi-Fi Direct nội bộ
+        val options = PeerConnectionFactory.Options().apply {
+            networkIgnoreMask = PeerConnectionFactory.Options.ADAPTER_TYPE_CELLULAR or
+                    PeerConnectionFactory.Options.ADAPTER_TYPE_VPN
+        }
         val encoderFactory = DefaultVideoEncoderFactory(eglBase.eglBaseContext, true, true)
         val decoderFactory = DefaultVideoDecoderFactory(eglBase.eglBaseContext)
         factory = PeerConnectionFactory.builder()
+            .setOptions(options)
             .setVideoEncoderFactory(encoderFactory)
             .setVideoDecoderFactory(decoderFactory)
             .createPeerConnectionFactory()
@@ -168,9 +182,23 @@ class CallManager(
         }, constraints)
     }
 
+    private fun drainQueuedCandidates() {
+        isRemoteDescriptionSet = true
+        synchronized(queuedRemoteCandidates) {
+            queuedRemoteCandidates.forEach { cand ->
+                peerConnection?.addIceCandidate(cand)
+            }
+            queuedRemoteCandidates.clear()
+        }
+    }
+
     fun onRemoteOffer(sdp: String) {
         val desc = SessionDescription(SessionDescription.Type.OFFER, sdp)
-        peerConnection?.setRemoteDescription(SdpAdapter("setRemoteOffer"), desc)
+        peerConnection?.setRemoteDescription(object : SdpAdapter("setRemoteOffer") {
+            override fun onSetSuccess() {
+                drainQueuedCandidates()
+            }
+        }, desc)
         peerConnection?.createAnswer(object : SdpAdapter("createAnswer") {
             override fun onCreateSuccess(answer: SessionDescription?) {
                 if (answer == null) return
@@ -193,11 +221,22 @@ class CallManager(
 
     fun onRemoteAnswer(sdp: String) {
         val desc = SessionDescription(SessionDescription.Type.ANSWER, sdp)
-        peerConnection?.setRemoteDescription(SdpAdapter("setRemoteAnswer"), desc)
+        peerConnection?.setRemoteDescription(object : SdpAdapter("setRemoteAnswer") {
+            override fun onSetSuccess() {
+                drainQueuedCandidates()
+            }
+        }, desc)
     }
 
     fun onRemoteIceCandidate(sdpMid: String?, sdpMLineIndex: Int, candidate: String) {
-        peerConnection?.addIceCandidate(IceCandidate(sdpMid, sdpMLineIndex, candidate))
+        val ice = IceCandidate(sdpMid, sdpMLineIndex, candidate)
+        if (isRemoteDescriptionSet) {
+            peerConnection?.addIceCandidate(ice)
+        } else {
+            synchronized(queuedRemoteCandidates) {
+                queuedRemoteCandidates.add(ice)
+            }
+        }
     }
 
     fun setMicEnabled(enabled: Boolean) {

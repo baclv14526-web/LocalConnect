@@ -1,5 +1,8 @@
 package com.localconnect.app.net
 
+import android.content.Context
+import android.net.ConnectivityManager
+import android.os.Build
 import android.util.Log
 import com.localconnect.app.model.MessageType
 import com.localconnect.app.model.Peer
@@ -20,10 +23,13 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.io.DataInputStream
 import java.io.DataOutputStream
+import java.net.Inet4Address
 import java.net.InetSocketAddress
+import java.net.NetworkInterface
 import java.net.ServerSocket
 import java.net.Socket
 import java.nio.charset.StandardCharsets
+import java.util.Collections
 
 private const val TAG = "ConnectionManager"
 const val CONTROL_PORT = 8988
@@ -31,6 +37,12 @@ const val CONTROL_PORT = 8988
 data class LivePeer(val id: String, val name: String, val host: String)
 
 object ConnectionManager {
+
+    private var appContext: Context? = null
+
+    fun init(context: Context) {
+        appContext = context.applicationContext
+    }
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
@@ -72,7 +84,10 @@ object ConnectionManager {
         if (serverJob != null) return
         serverJob = scope.launch {
             try {
-                val server = ServerSocket(CONTROL_PORT)
+                val server = ServerSocket().apply {
+                    reuseAddress = true
+                    bind(InetSocketAddress(CONTROL_PORT))
+                }
                 serverSocket = server
                 Log.i(TAG, "TCP server lắng nghe cổng $CONTROL_PORT")
                 while (true) {
@@ -86,10 +101,61 @@ object ConnectionManager {
     }
 
     /**
+     * Gán socket vào card mạng Wi-Fi Direct / P2P để tránh Android định tuyến
+     * nhầm qua mạng di động 4G/5G khi cả 2 cùng bật.
+     */
+    private fun bindSocketToP2p(socket: Socket) {
+        // Cách 1: Tìm IP nội bộ của interface p2p (hoặc 192.168.49.x) rồi bind local endpoint
+        try {
+            val interfaces = NetworkInterface.getNetworkInterfaces()
+            var localP2pAddr: java.net.InetAddress? = null
+            if (interfaces != null) {
+                for (iface in Collections.list(interfaces)) {
+                    if (iface.isUp && (iface.name.contains("p2p", ignoreCase = true) || iface.name.contains("wlan", ignoreCase = true))) {
+                        for (addr in Collections.list(iface.inetAddresses)) {
+                            if (!addr.isLoopbackAddress && addr is Inet4Address && addr.hostAddress?.startsWith("192.168.49.") == true) {
+                                localP2pAddr = addr
+                                break
+                            }
+                        }
+                    }
+                    if (localP2pAddr != null) break
+                }
+            }
+            if (localP2pAddr != null) {
+                socket.bind(InetSocketAddress(localP2pAddr, 0))
+                Log.i(TAG, "Đã bind socket tới local P2P IP: ${localP2pAddr.hostAddress}")
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Không thể bind socket tới local P2P IP: ${e.message}")
+        }
+
+        // Cách 2: Nếu có Context và Android >= M, tìm Network P2P trong ConnectivityManager
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && appContext != null) {
+                val cm = appContext?.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
+                cm?.allNetworks?.forEach { net ->
+                    val lp = cm.getLinkProperties(net)
+                    if (lp != null) {
+                        val isP2p = lp.interfaceName?.contains("p2p", ignoreCase = true) == true ||
+                                lp.linkAddresses.any { it.address.hostAddress?.startsWith("192.168.49.") == true }
+                        if (isP2p) {
+                            try {
+                                net.bindSocket(socket)
+                                Log.i(TAG, "Đã bind socket vào P2P Network (${lp.interfaceName})")
+                            } catch (_: Exception) {}
+                        }
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Không thể bind socket vào ConnectivityManager network: ${e.message}")
+        }
+    }
+
+    /**
      * Kết nối TCP tới một peer.
-     * FIX BUG 1 & 4: không dùng ID giả "host-$ip" nữa — ID thật được trao đổi
-     * trong HELLO handshake bên trong bindSocket(). Trước khi biết ID thật, chỉ
-     * kiểm tra xem có socket nào đang mở tới host:port đó chưa để tránh kết nối đôi.
+     * Tự động bind socket vào mạng Wi-Fi Direct để không bị định tuyến qua 4G/5G.
      */
     fun connectToPeer(peer: Peer, myId: String, myName: String) {
         scope.launch {
@@ -104,6 +170,7 @@ object ConnectionManager {
             try {
                 Log.i(TAG, "Đang nối TCP tới ${peer.host}:${peer.port}")
                 val socket = Socket()
+                bindSocketToP2p(socket)
                 socket.connect(InetSocketAddress(peer.host, peer.port), 6000)
                 bindSocket(socket)
             } catch (e: Exception) {
@@ -242,7 +309,7 @@ object ConnectionManager {
                 val id   = o.getString("id")
                 val name = o.getString("name")
                 val host = o.getString("host")
-                if (id == localId || host.isEmpty()) return
+                if (id == localId || host.isEmpty()) continue
                 scope.launch {
                     val already = connectionsMutex.withLock { connections.containsKey(id) }
                     if (!already) {
@@ -280,8 +347,16 @@ object ConnectionManager {
         }
         val json = msg.toJson()
         val targets = if (msg.targetId != null) {
-            snapshot.filter { it.peerId == msg.targetId }.also {
-                if (it.isEmpty()) Log.w(TAG, "Không tìm thấy kết nối với targetId=${msg.targetId}")
+            val direct = snapshot.filter { it.peerId == msg.targetId }
+            if (direct.isNotEmpty()) {
+                direct
+            } else if (!isHost) {
+                // Client không có đường nối trực tiếp với peer đích -> gửi cho Host để Host relay
+                Log.d(TAG, "Không có kết nối trực tiếp với ${msg.targetId}, chuyển qua Host để relay")
+                snapshot.take(1)
+            } else {
+                Log.w(TAG, "Host không tìm thấy kết nối với targetId=${msg.targetId}")
+                emptyList()
             }
         } else {
             snapshot
@@ -313,6 +388,13 @@ object ConnectionManager {
     }
 
     fun connectedIds(): Set<String> = connections.keys.toSet()
+
+    suspend fun isConnectedTo(hostOrId: String): Boolean {
+        return connectionsMutex.withLock {
+            connections.containsKey(hostOrId) ||
+                    connections.values.any { it.socket.inetAddress?.hostAddress == hostOrId }
+        }
+    }
 
     fun disconnectAllPeers() {
         scope.launch {

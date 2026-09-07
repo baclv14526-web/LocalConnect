@@ -17,6 +17,7 @@ object Permissions {
             list += Manifest.permission.NEARBY_WIFI_DEVICES // cần để quét/kết nối Wi-Fi Direct
         } else {
             list += Manifest.permission.ACCESS_FINE_LOCATION // Wi-Fi Direct cần quyền vị trí trước Android 13
+            list += Manifest.permission.ACCESS_COARSE_LOCATION
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                 list += Manifest.permission.READ_EXTERNAL_STORAGE
             } else {

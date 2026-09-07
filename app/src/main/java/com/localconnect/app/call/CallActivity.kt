@@ -1,7 +1,9 @@
 package com.localconnect.app.call
 
 import android.Manifest
+import android.content.Context
 import android.content.pm.PackageManager
+import android.media.AudioManager
 import android.os.Bundle
 import android.widget.Button
 import android.widget.TextView
@@ -12,7 +14,6 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.lifecycleScope
 import com.localconnect.app.R
 import com.localconnect.app.model.MessageType
-import com.localconnect.app.net.ConnectionManager
 import kotlinx.coroutines.launch
 import org.webrtc.EglBase
 import org.webrtc.RendererCommon
@@ -28,12 +29,6 @@ const val EXTRA_REMOTE_SDP  = "remote_sdp"
 /**
  * Màn hình gọi thoại/gọi video 1-1.
  * Dùng XML layout (activity_call.xml) vì SurfaceViewRenderer của WebRTC là View cổ điển.
- * Flow:
- *   - Xin quyền Mic (+ Camera nếu là video call) trước.
- *   - Sau khi có quyền mới khởi động CallManager (tránh crash khi chưa có quyền).
- *   - Bên gọi: makeOffer=true → tạo SDP offer → gửi qua ConnectionManager.
- *   - Bên nghe: makeOffer=false → nhận SDP offer từ Intent → trả SDP answer.
- *   - ICE candidate trao đổi tự động qua ConnectionManager.incomingMessages.
  */
 class CallActivity : AppCompatActivity(), CallManager.Listener {
 
@@ -55,6 +50,11 @@ class CallActivity : AppCompatActivity(), CallManager.Listener {
     private var isVideo  = false
     private var isIncoming = false
     private var remoteSdp: String? = null
+    private var pendingRemoteAnswer: String? = null
+
+    private var audioManager: AudioManager? = null
+    private var previousAudioMode: Int = AudioManager.MODE_NORMAL
+    private var previousSpeakerphoneOn: Boolean = false
 
     private val permissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
@@ -97,20 +97,29 @@ class CallActivity : AppCompatActivity(), CallManager.Listener {
         remoteView.setScalingType(RendererCommon.ScalingType.SCALE_ASPECT_FIT)
         localView.setMirror(true)
 
-        // Lắng nghe tín hiệu WebRTC đến từ peer ngay lập tức (trước cả khi quyền được cấp)
-        // để không bỏ lỡ ICE candidate / answer đến sớm
+        // Lắng nghe tín hiệu WebRTC từ CallSignalManager (đã bao gồm các gói đến sớm)
         lifecycleScope.launch {
-            ConnectionManager.incomingMessages.collect { msg ->
+            CallSignalManager.signalEvents.collect { msg ->
                 if (msg.senderId != peerId) return@collect
                 when (msg.type) {
-                    MessageType.CALL_ANSWER ->
-                        msg.sdp?.let { if (callStarted) callManager.onRemoteAnswer(it) }
-                    MessageType.CALL_ICE ->
-                        msg.iceCandidate?.let {
-                            if (callStarted) callManager.onRemoteIceCandidate(
-                                msg.iceSdpMid, msg.iceSdpMLineIndex, it
-                            )
+                    MessageType.CALL_ANSWER -> {
+                        msg.sdp?.let {
+                            if (callStarted) {
+                                callManager.onRemoteAnswer(it)
+                            } else {
+                                pendingRemoteAnswer = it
+                            }
                         }
+                    }
+                    MessageType.CALL_ICE -> {
+                        msg.iceCandidate?.let {
+                            if (callStarted) {
+                                callManager.onRemoteIceCandidate(
+                                    msg.iceSdpMid, msg.iceSdpMLineIndex, it
+                                )
+                            }
+                        }
+                    }
                     MessageType.CALL_END -> {
                         Toast.makeText(this@CallActivity,
                             "$peerName đã kết thúc cuộc gọi", Toast.LENGTH_SHORT).show()
@@ -136,12 +145,37 @@ class CallActivity : AppCompatActivity(), CallManager.Listener {
         }
     }
 
+    private fun setupAudio() {
+        try {
+            val am = getSystemService(Context.AUDIO_SERVICE) as? AudioManager ?: return
+            audioManager = am
+            previousAudioMode = am.mode
+            previousSpeakerphoneOn = am.isSpeakerphoneOn
+            am.mode = AudioManager.MODE_IN_COMMUNICATION
+            am.isSpeakerphoneOn = isVideo
+        } catch (_: Exception) {}
+    }
+
+    private fun restoreAudio() {
+        audioManager?.let { am ->
+            try {
+                am.mode = previousAudioMode
+                am.isSpeakerphoneOn = previousSpeakerphoneOn
+            } catch (_: Exception) {}
+        }
+    }
+
     private fun startCall() {
+        setupAudio()
         callManager = CallManager(this, eglBase, peerId, isVideo, this)
         callStarted = true
         callManager.start(makeOffer = !isIncoming)
         if (isIncoming && remoteSdp != null) {
             callManager.onRemoteOffer(remoteSdp!!)
+        }
+        pendingRemoteAnswer?.let {
+            callManager.onRemoteAnswer(it)
+            pendingRemoteAnswer = null
         }
         setupButtons()
     }
@@ -188,6 +222,8 @@ class CallActivity : AppCompatActivity(), CallManager.Listener {
 
     override fun onDestroy() {
         super.onDestroy()
+        restoreAudio()
+        CallSignalManager.clear(peerId)
         if (callStarted) {
             try { callManager.release() } catch (_: Exception) {}
         }

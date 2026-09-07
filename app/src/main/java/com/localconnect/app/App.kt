@@ -7,6 +7,7 @@ import android.media.AudioAttributes
 import android.media.RingtoneManager
 import android.os.Build
 import com.localconnect.app.net.DeviceIdentity
+import com.localconnect.app.net.ConnectionManager
 import com.localconnect.app.net.WifiDirectManager
 
 class App : Application() {
@@ -14,6 +15,7 @@ class App : Application() {
         super.onCreate()
         DeviceIdentity.init(this)
         WifiDirectManager.init(this)
+        ConnectionManager.init(this)
         createNotificationChannels()
     }
 
