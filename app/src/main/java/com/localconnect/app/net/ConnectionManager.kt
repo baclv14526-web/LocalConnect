@@ -55,8 +55,6 @@ object ConnectionManager {
 
     var isHost: Boolean = false
         private set
-    private var localId: String = ""
-    private var localName: String = ""
 
     private val _incomingMessages = MutableSharedFlow<WireMessage>(extraBufferCapacity = 128)
     val incomingMessages = _incomingMessages.asSharedFlow()
@@ -74,13 +72,9 @@ object ConnectionManager {
 
     fun setRole(host: Boolean, myId: String, myName: String) {
         isHost = host
-        localId = myId
-        localName = myName
     }
 
     fun startServer(myId: String, myName: String) {
-        localId = myId
-        localName = myName
         if (serverJob != null) return
         serverJob = scope.launch {
             try {
@@ -104,7 +98,7 @@ object ConnectionManager {
      * Gán socket vào card mạng Wi-Fi Direct / P2P để tránh Android định tuyến
      * nhầm qua mạng di động 4G/5G khi cả 2 cùng bật.
      */
-    private fun bindSocketToP2p(socket: Socket) {
+    fun bindSocketToP2p(socket: Socket) {
         // Cách 1: Tìm IP nội bộ của interface p2p (hoặc 192.168.49.x) rồi bind local endpoint
         try {
             val interfaces = NetworkInterface.getNetworkInterfaces()
@@ -195,8 +189,8 @@ object ConnectionManager {
             // --- Bắt tay HELLO ---
             writeFramed(out, WireMessage(
                 type = MessageType.HELLO,
-                senderId = localId,
-                senderName = localName
+                senderId = DeviceIdentity.myId,
+                senderName = DeviceIdentity.myName
             ).toJson())
 
             val helloRaw = readFramed(input) ?: run {
@@ -213,7 +207,7 @@ object ConnectionManager {
             val peerName = helloMsg.senderName
             truePeerId   = peerId
 
-            if (peerId == localId) {
+            if (peerId == DeviceIdentity.myId) {
                 Log.w(TAG, "Kết nối tới chính mình, bỏ qua")
                 return
             }
@@ -258,7 +252,7 @@ object ConnectionManager {
                 _incomingMessages.emit(msg)
 
                 // Host relay tin cho peer khác nếu cần
-                if (isHost && msg.senderId != localId) {
+                if (isHost && msg.senderId != DeviceIdentity.myId) {
                     relay(msg, fromPeerId = peerId)
                 }
             }
@@ -290,8 +284,8 @@ object ConnectionManager {
         }
         val msg = WireMessage(
             type = MessageType.PEER_LIST,
-            senderId = localId,
-            senderName = localName,
+            senderId = DeviceIdentity.myId,
+            senderName = DeviceIdentity.myName,
             text = arr.toString()
         )
         val payload = msg.toJson()
@@ -309,11 +303,11 @@ object ConnectionManager {
                 val id   = o.getString("id")
                 val name = o.getString("name")
                 val host = o.getString("host")
-                if (id == localId || host.isEmpty()) continue
+                if (id == DeviceIdentity.myId || host.isEmpty()) continue
                 scope.launch {
                     val already = connectionsMutex.withLock { connections.containsKey(id) }
                     if (!already) {
-                        connectToPeer(Peer(id = id, name = name, host = host, port = CONTROL_PORT), localId, localName)
+                        connectToPeer(Peer(id = id, name = name, host = host, port = CONTROL_PORT), DeviceIdentity.myId, DeviceIdentity.myName)
                     }
                 }
             }
@@ -326,8 +320,8 @@ object ConnectionManager {
 
     private suspend fun relay(msg: WireMessage, fromPeerId: String) {
         when {
-            msg.targetId == null      -> sendExcept(msg, fromPeerId)   // broadcast
-            msg.targetId != localId   -> sendDirect(msg.targetId, msg) // gửi riêng tới peer khác
+            msg.targetId == null                    -> sendExcept(msg, fromPeerId)   // broadcast
+            msg.targetId != DeviceIdentity.myId     -> sendDirect(msg.targetId, msg) // gửi riêng tới peer khác
             // targetId == localId: tin gửi cho Host, đã emit ở trên rồi
         }
     }

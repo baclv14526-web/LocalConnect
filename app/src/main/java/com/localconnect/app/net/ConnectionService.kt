@@ -58,25 +58,23 @@ class ConnectionService : Service() {
 
                     s.groupFormed && !s.isGroupOwner -> {
                         // Máy này là client: chủ động kết nối và tự động thử lại tới Group Owner
-                        val goIp = s.groupOwnerAddress
-                        if (goIp != null) {
-                            if (clientConnectJob == null || clientConnectJob?.isActive != true) {
-                                clientConnectJob = scope.launch {
-                                    android.util.Log.i("ConnectionService", "Khởi động retry loop kết nối tới Group Owner @ $goIp")
-                                    ConnectionManager.setRole(host = false, myId, myName)
-                                    while (isActive) {
-                                        val isConnected = ConnectionManager.isConnectedTo(goIp)
-                                        if (isConnected) {
-                                            delay(3000)
-                                            continue
-                                        }
-                                        android.util.Log.i("ConnectionService", "Đang thử nối TCP tới Group Owner @ $goIp...")
-                                        ConnectionManager.connectToPeer(
-                                            Peer(id = goIp, name = "GroupOwner", host = goIp, port = CONTROL_PORT),
-                                            myId, myName
-                                        )
-                                        delay(2000)
+                        val goIp = s.groupOwnerAddress ?: "192.168.49.1"
+                        if (clientConnectJob == null || clientConnectJob?.isActive != true) {
+                            clientConnectJob = scope.launch {
+                                android.util.Log.i("ConnectionService", "Khởi động retry loop kết nối tới Group Owner @ $goIp")
+                                ConnectionManager.setRole(host = false, myId, myName)
+                                while (isActive) {
+                                    val isConnected = ConnectionManager.isConnectedTo(goIp)
+                                    if (isConnected) {
+                                        delay(3000)
+                                        continue
                                     }
+                                    android.util.Log.i("ConnectionService", "Đang thử nối TCP tới Group Owner @ $goIp...")
+                                    ConnectionManager.connectToPeer(
+                                        Peer(id = goIp, name = "GroupOwner", host = goIp, port = CONTROL_PORT),
+                                        myId, myName
+                                    )
+                                    delay(2000)
                                 }
                             }
                         }

@@ -114,6 +114,7 @@ class FileTransferManager(private val context: Context) {
         scope.launch {
             try {
                 val socket = Socket()
+                ConnectionManager.bindSocketToP2p(socket)
                 socket.connect(InetSocketAddress(peerHostOf(offer.senderId), offer.filePort), 5000)
                 socket.use { s ->
                     val input = s.getInputStream()

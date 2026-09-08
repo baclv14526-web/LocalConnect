@@ -70,7 +70,21 @@ object WifiDirectManager {
                         _state.update { it.copy(isWifiP2pEnabled = enabled) }
                     }
                     WifiP2pManager.WIFI_P2P_PEERS_CHANGED_ACTION -> requestPeers()
-                    WifiP2pManager.WIFI_P2P_CONNECTION_CHANGED_ACTION -> requestConnectionInfo()
+                    WifiP2pManager.WIFI_P2P_CONNECTION_CHANGED_ACTION -> {
+                        @Suppress("DEPRECATION")
+                        val p2pInfo = intent.getParcelableExtra<android.net.wifi.p2p.WifiP2pInfo>(WifiP2pManager.EXTRA_WIFI_P2P_INFO)
+                        if (p2pInfo != null) {
+                            val goIp = p2pInfo.groupOwnerAddress?.hostAddress ?: if (p2pInfo.groupFormed) "192.168.49.1" else null
+                            _state.update {
+                                it.copy(
+                                    groupFormed = p2pInfo.groupFormed,
+                                    isGroupOwner = p2pInfo.isGroupOwner,
+                                    groupOwnerAddress = goIp
+                                )
+                            }
+                        }
+                        requestConnectionInfo()
+                    }
                     WifiP2pManager.WIFI_P2P_THIS_DEVICE_CHANGED_ACTION -> {
                         @Suppress("DEPRECATION")
                         val device = intent.getParcelableExtra<WifiP2pDevice>(
@@ -196,17 +210,21 @@ object WifiDirectManager {
         }
     }
 
-    private fun requestConnectionInfo() {
+    fun requestConnectionInfo() {
         if (!initialized) return
-        manager.requestConnectionInfo(channel) { info ->
-            _state.update {
-                it.copy(
-                    groupFormed = info.groupFormed,
-                    isGroupOwner = info.isGroupOwner,
-                    groupOwnerAddress = info.groupOwnerAddress?.hostAddress
-                )
+        try {
+            manager.requestConnectionInfo(channel) { info ->
+                if (info == null) return@requestConnectionInfo
+                val goIp = info.groupOwnerAddress?.hostAddress ?: if (info.groupFormed) "192.168.49.1" else null
+                _state.update {
+                    it.copy(
+                        groupFormed = info.groupFormed,
+                        isGroupOwner = info.isGroupOwner,
+                        groupOwnerAddress = goIp
+                    )
+                }
             }
-        }
+        } catch (_: Exception) {}
     }
 
     fun removeGroup() {
