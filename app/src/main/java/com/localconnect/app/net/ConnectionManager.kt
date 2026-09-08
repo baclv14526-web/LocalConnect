@@ -116,7 +116,7 @@ object ConnectionManager {
                     if (localP2pAddr != null) break
                 }
             }
-            if (localP2pAddr != null) {
+            if (localP2pAddr != null && !socket.isBound) {
                 socket.bind(InetSocketAddress(localP2pAddr, 0))
                 Log.i(TAG, "Đã bind socket tới local P2P IP: ${localP2pAddr.hostAddress}")
             }
@@ -155,7 +155,7 @@ object ConnectionManager {
         scope.launch {
             // Kiểm tra theo IP để tránh kết nối đôi trước khi có ID thật
             val alreadyConnected = connectionsMutex.withLock {
-                connections.values.any { it.socket.inetAddress?.hostAddress == peer.host }
+                connections.values.any { !it.socket.isClosed && it.socket.isConnected && it.socket.inetAddress?.hostAddress == peer.host }
             }
             if (alreadyConnected) {
                 Log.d(TAG, "Đã có kết nối tới ${peer.host}, bỏ qua")
@@ -219,13 +219,15 @@ object ConnectionManager {
             val conn = PeerConnection(peerId, peerName, socket, out)
             connectionsMutex.withLock {
                 val old = connections[peerId]
-                if (old != null) {
-                    // Đã có kết nối với peer này rồi (hai bên cùng nối nhau) → đóng cái mới
-                    Log.d(TAG, "Đã có kết nối với $peerName, đóng socket thừa")
+                if (old != null && !old.socket.isClosed && old.socket.isConnected) {
+                    // Đã có kết nối sống với peer này rồi (hai bên cùng nối nhau) → đóng socket mới
+                    Log.d(TAG, "Đã có kết nối sống với $peerName, đóng socket thừa")
                     socket.close()
                     truePeerId = null
                     return
                 }
+                // Nếu old tồn tại nhưng socket đã đóng/lỗi, đóng old và gán conn mới
+                try { old?.socket?.close() } catch (_: Exception) {}
                 connections[peerId] = conn
             }
             _livePeers.update { it + (peerId to LivePeer(peerId, peerName, remoteHost)) }
