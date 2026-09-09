@@ -146,6 +146,27 @@ object WifiDirectManager {
 
     @SuppressLint("MissingPermission")
     private fun doCreateGroup() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            val config = WifiP2pConfig.Builder()
+                .setGroupOperatingBand(WifiP2pConfig.GROUP_OWNER_BAND_2GHZ)
+                .build()
+            manager.createGroup(channel, config, object : WifiP2pManager.ActionListener {
+                override fun onSuccess() {
+                    Log.i(TAG, "createGroup(2.4GHz) SUCCESS")
+                    _state.update { it.copy(isCreatingGroup = false) }
+                }
+                override fun onFailure(reason: Int) {
+                    Log.e(TAG, "createGroup(2.4GHz) FAILED reason=$reason, fallback createGroup chuẩn")
+                    fallbackCreateGroup()
+                }
+            })
+        } else {
+            fallbackCreateGroup()
+        }
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun fallbackCreateGroup() {
         manager.createGroup(channel, object : WifiP2pManager.ActionListener {
             override fun onSuccess() {
                 Log.i(TAG, "createGroup() SUCCESS")

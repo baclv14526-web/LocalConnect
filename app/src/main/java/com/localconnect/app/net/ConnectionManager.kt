@@ -99,32 +99,9 @@ object ConnectionManager {
      * nhầm qua mạng di động 4G/5G khi cả 2 cùng bật.
      */
     fun bindSocketToP2p(socket: Socket) {
-        // Cách 1: Tìm IP nội bộ của interface p2p (hoặc 192.168.49.x) rồi bind local endpoint
-        try {
-            val interfaces = NetworkInterface.getNetworkInterfaces()
-            var localP2pAddr: java.net.InetAddress? = null
-            if (interfaces != null) {
-                for (iface in Collections.list(interfaces)) {
-                    if (iface.isUp && (iface.name.contains("p2p", ignoreCase = true) || iface.name.contains("wlan", ignoreCase = true))) {
-                        for (addr in Collections.list(iface.inetAddresses)) {
-                            if (!addr.isLoopbackAddress && addr is Inet4Address && addr.hostAddress?.startsWith("192.168.49.") == true) {
-                                localP2pAddr = addr
-                                break
-                            }
-                        }
-                    }
-                    if (localP2pAddr != null) break
-                }
-            }
-            if (localP2pAddr != null && !socket.isBound) {
-                socket.bind(InetSocketAddress(localP2pAddr, 0))
-                Log.i(TAG, "Đã bind socket tới local P2P IP: ${localP2pAddr.hostAddress}")
-            }
-        } catch (e: Exception) {
-            Log.w(TAG, "Không thể bind socket tới local P2P IP: ${e.message}")
-        }
+        var bound = false
 
-        // Cách 2: Nếu có Context và Android >= M, tìm Network P2P trong ConnectivityManager
+        // Cách 1 (Ưu tiên số 1): Tìm Network P2P trong ConnectivityManager và bind socket trước khi connect
         try {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && appContext != null) {
                 val cm = appContext?.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
@@ -136,14 +113,48 @@ object ConnectionManager {
                         if (isP2p) {
                             try {
                                 net.bindSocket(socket)
+                                cm.bindProcessToNetwork(net)
+                                bound = true
                                 Log.i(TAG, "Đã bind socket vào P2P Network (${lp.interfaceName})")
-                            } catch (_: Exception) {}
+                            } catch (e: Exception) {
+                                Log.w(TAG, "net.bindSocket thất bại: ${e.message}")
+                            }
                         }
                     }
                 }
             }
         } catch (e: Exception) {
             Log.w(TAG, "Không thể bind socket vào ConnectivityManager network: ${e.message}")
+        }
+
+        if (bound) return
+
+        // Cách 2 (Dự phòng cho Android cũ hoặc khi ConnectivityManager không trả về P2P network):
+        // Tìm IP nội bộ của interface p2p (192.168.49.x) rồi bind local endpoint
+        try {
+            if (!socket.isBound) {
+                val interfaces = NetworkInterface.getNetworkInterfaces()
+                var localP2pAddr: java.net.InetAddress? = null
+                if (interfaces != null) {
+                    for (iface in Collections.list(interfaces)) {
+                        if (iface.isUp && (iface.name.contains("p2p", ignoreCase = true) || iface.name.contains("wlan", ignoreCase = true))) {
+                            for (addr in Collections.list(iface.inetAddresses)) {
+                                if (!addr.isLoopbackAddress && addr is Inet4Address && (addr.hostAddress?.startsWith("192.168.49.") == true || iface.name.contains("p2p", ignoreCase = true))) {
+                                    localP2pAddr = addr
+                                    break
+                                }
+                            }
+                        }
+                        if (localP2pAddr != null) break
+                    }
+                }
+                if (localP2pAddr != null) {
+                    socket.bind(InetSocketAddress(localP2pAddr, 0))
+                    Log.i(TAG, "Đã bind socket tới local P2P IP: ${localP2pAddr.hostAddress}")
+                }
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Không thể bind socket tới local P2P IP: ${e.message}")
         }
     }
 

@@ -26,7 +26,8 @@ fun WifiDirectSetupScreen(
     state: WifiDirectState,
     onCreateGroup: () -> Unit,
     onDiscover: () -> Unit,
-    onJoin: (WifiP2pDevice) -> Unit
+    onJoin: (WifiP2pDevice) -> Unit,
+    onManualConnect: () -> Unit
 ) {
     val context = LocalContext.current
     var locationCheckTick by remember { mutableIntStateOf(0) }
@@ -130,11 +131,17 @@ fun WifiDirectSetupScreen(
 
                 if (state.peers.isEmpty()) {
                     Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                        Text(
-                            "Chưa thấy nhóm nào.\nHãy chắc chắn người kia đã bấm \"Tạo nhóm\" và cả hai đều bật Wi-Fi.",
-                            textAlign = TextAlign.Center,
-                            style = MaterialTheme.typography.bodySmall
-                        )
+                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                            Text(
+                                "Chưa thấy nhóm nào.\nHãy chắc chắn người kia đã bấm \"Tạo nhóm\" và cả hai đều bật Wi-Fi.",
+                                textAlign = TextAlign.Center,
+                                style = MaterialTheme.typography.bodySmall
+                            )
+                            Spacer(Modifier.height(16.dp))
+                            TextButton(onClick = onManualConnect) {
+                                Text("Hoặc kết nối trực tiếp bằng IP (khi cùng Wi-Fi)")
+                            }
+                        }
                     }
                 } else {
                     LazyColumn {

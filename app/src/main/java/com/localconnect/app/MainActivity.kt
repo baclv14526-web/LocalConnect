@@ -156,7 +156,8 @@ class MainActivity : ComponentActivity() {
                 state = wifiDirectState,
                 onCreateGroup = { vm.createGroup() },
                 onDiscover = { vm.discoverNearbyGroups() },
-                onJoin = { device -> vm.joinGroup(device) }
+                onJoin = { device -> vm.joinGroup(device) },
+                onManualConnect = { manualIp = ""; showManualConnectDialog = true }
             )
             return
         }
